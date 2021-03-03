@@ -6,9 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/cavaliercoder/grab"
-	"github.com/vbauerster/mpb/v6"
-	"github.com/vbauerster/mpb/v6/decor"
 	"io/ioutil"
 	"net/http"
 	"os"
@@ -17,6 +14,10 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/cavaliercoder/grab"
+	"github.com/vbauerster/mpb/v6"
+	"github.com/vbauerster/mpb/v6/decor"
 )
 
 const UaKey = "User-Agent"
@@ -192,6 +193,49 @@ func fetchRecordInfo(recordId string) (*RecordInfo, error) {
 	return &apiResp.Data, nil
 }
 
+// fetchVideoInfo fetches video info from bilibili API.
+func fetchVideoInfo(recordId string) (*LiveRecordInfo, error) {
+	timeout, cancel := context.WithTimeout(context.Background(), time.Second*30)
+	defer cancel()
+	var buf bytes.Buffer
+
+	riReq, err := http.NewRequestWithContext(
+		timeout,
+		http.MethodGet,
+		fmt.Sprintf("https://api.live.bilibili.com/xlive/web-room/v1/record/getInfoByLiveRecord?rid=%s", recordId),
+		&buf,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	riReq.Header = http.Header{
+		UaKey: []string{UserAgent},
+	}
+	resp, err := http.DefaultClient.Do(riReq)
+	if err != nil {
+		return nil, err
+	}
+
+	defer resp.Body.Close()
+
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var videoApiResp VideoApiResponse
+	if err := json.Unmarshal(body, &videoApiResp); err != nil {
+		return nil, err
+	}
+
+	if videoApiResp.Code != 0 {
+		return nil, fmt.Errorf("响应码=%d，响应消息=%v\n", videoApiResp.Code, videoApiResp.Message)
+	}
+
+	return &videoApiResp.Data.LiveRecord, nil
+}
+
 func main() {
 	criticalErr := func(e error, logLine string) {
 		if e != nil {
@@ -212,7 +256,12 @@ func main() {
 	recordInfo, err := fetchRecordInfo(recordId)
 	criticalErr(err, "加载视频分段信息")
 
-	fmt.Printf("此直播回放的画质是 %s，共有%d部分，总大小%s，总时长%v\n", recordInfo.Quality(), len(recordInfo.List), recordInfo.Size, recordInfo.Length)
+	videoInfo, err := fetchVideoInfo(recordId)
+	criticalErr(err, "加载视频信息")
+	timeLayout := "2006-01-02 15:04:05"
+	startTimestamp := time.Unix(videoInfo.StartTimestamp, 0).Local().Format(timeLayout)
+
+	fmt.Printf("此直播回放的画质是 %s，共有%d部分，总大小%s，总时长%v，标题《%s》，开播时间%s\n", recordInfo.Quality(), len(recordInfo.List), recordInfo.Size, recordInfo.Length, videoInfo.Title, startTimestamp)
 
 	// Mkdir
 	cwd, err := os.Getwd()
@@ -221,7 +270,7 @@ func main() {
 	criticalErr(os.MkdirAll(recordDownloadDir, 0755), "建立下载目录")
 	criticalErr(downloadRecordParts(recordInfo, recordDownloadDir), "下载直播回放分段")
 
-	output := filepath.Join(recordDownloadDir, fmt.Sprintf("%s-%s.mp4", recordId, recordInfo.Quality()))
+	output := filepath.Join(recordDownloadDir, fmt.Sprintf("%s-%s-%s.mp4", startTimestamp, recordId, videoInfo.Title))
 	if len(recordInfo.List) > 1 {
 		criticalErr(concatRecordParts(recordInfo, recordDownloadDir, output), "合并视频分段")
 	} else {
