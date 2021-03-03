@@ -12,6 +12,8 @@ import (
 	"github.com/gofrs/uuid"
 )
 
+// RecordPart represents a part of the whole livestream recording.
+// It's typically H.264 media stream encapsulated in a single FLV container.
 type RecordPart struct {
 	Url         string   `json:"url"`
 	Size        Size     `json:"size"`
@@ -21,6 +23,7 @@ type RecordPart struct {
 	filename    string   `json:"-"`
 }
 
+// FileName returns the unique filename of this part.
 func (rp *RecordPart) FileName() string {
 	if rp.filename == "" {
 		u, err := url.Parse(rp.Url)
@@ -43,6 +46,7 @@ type Quality struct {
 	Name   string `json:"desc"`
 }
 
+// RecordInfo represents minimal media info about a complete recording.
 type RecordInfo struct {
 	List                 []RecordPart `json:"list"`
 	Size                 Size         `json:"size"`
@@ -60,6 +64,7 @@ func (ri *RecordInfo) Quality() string {
 	return "未知"
 }
 
+// ApiResponse wraps general HTTP API response from bilibili.
 type ApiResponse struct {
 	Code    int        `json:"code"`
 	Message string     `json:"message"`
@@ -84,6 +89,7 @@ type VideoApiResponse struct {
 	Data    VideoData `json:"data"`
 }
 
+// Duration is an alias for `time.Duration` that supports direct JSON-unmarshalling.
 type Duration struct {
 	time.Duration
 }
@@ -103,6 +109,8 @@ func (d *Duration) UnmarshalJSON(b []byte) error {
 	}
 }
 
+// Size is a file size type which always evaluates to human-readable form.
+// It also supports direct JSON-unmarshalling.
 type Size struct {
 	datasize.ByteSize
 }
