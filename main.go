@@ -24,7 +24,7 @@ const UaKey = "User-Agent"
 const UserAgent = "Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/55.0.2883.87 Safari/537.36"
 
 // downloadRecordParts download all parts of given livestream record into `where`.
-func downloadRecordParts(recordInfo *RecordInfo, where string) error {
+func downloadRecordParts(recordInfo *RecordParts, where string) error {
 	var wg sync.WaitGroup
 	progressBars := mpb.New(mpb.WithWaitGroup(&wg), mpb.WithRefreshRate(time.Millisecond*500))
 
@@ -82,7 +82,7 @@ func downloadRecordParts(recordInfo *RecordInfo, where string) error {
 // concatRecordParts concatenates multiple record parts (in individual FLV files) into a single MP4 file.
 // Video parts are expected to be stored in `where`, and concatenated media files will be stored as `output`.
 // Requires `ffmpeg` binary to present in PATH.
-func concatRecordParts(recordInfo *RecordInfo, where, output string) error {
+func concatRecordParts(recordInfo *RecordParts, where, output string) error {
 	if info, err := os.Stat(output); err == nil && info.Mode().IsRegular() {
 		return fmt.Errorf("文件 %s 已经存在", output)
 	}
@@ -188,8 +188,8 @@ func getApi(url string) (*json.RawMessage, error) {
 	return &apiResp.Data, nil
 }
 
-// fetchVideoInfo fetches video info (title & start / end time) from bilibili API.
-func fetchVideoInfo(recordId string) (*LiveRecordInfo, error) {
+// fetchRecordInfo fetches info about given livestream recording (title & start / end time) from bilibili API.
+func fetchRecordInfo(recordId string) (*LiveRecordInfo, error) {
 	data, err := getApi(fmt.Sprintf("https://api.live.bilibili.com/xlive/web-room/v1/record/getInfoByLiveRecord?rid=%s", recordId))
 	if err != nil {
 		return nil, err
@@ -200,14 +200,14 @@ func fetchVideoInfo(recordId string) (*LiveRecordInfo, error) {
 	return &info.Info, err
 }
 
-// fetchRecordInfo fetches record parts list from bilibili API.
-func fetchRecordInfo(recordId string) (*RecordInfo, error) {
+// fetchRecordParts fetches record parts list from bilibili API.
+func fetchRecordParts(recordId string) (*RecordParts, error) {
 	data, err := getApi(fmt.Sprintf("https://api.live.bilibili.com/xlive/web-room/v1/record/getLiveRecordUrl?rid=%s&platform=html5", recordId))
 	if err != nil {
 		return nil, err
 	}
 
-	var info RecordInfo
+	var info RecordParts
 	err = json.Unmarshal(*data, &info)
 	return &info, err
 }
@@ -229,10 +229,10 @@ func main() {
 	recordId = rIds[len(rIds)-1]
 	fmt.Printf("直播回放ID是 %s\n", recordId)
 
-	recordInfo, err := fetchRecordInfo(recordId)
+	recordInfo, err := fetchRecordParts(recordId)
 	criticalErr(err, "加载视频分段信息")
 
-	videoInfo, err := fetchVideoInfo(recordId)
+	videoInfo, err := fetchRecordInfo(recordId)
 	criticalErr(err, "加载视频信息")
 	timeLayout := "2006-01-02 15:04:05"
 	startTimestamp := time.Unix(videoInfo.StartTimestamp, 0).Local().Format(timeLayout)

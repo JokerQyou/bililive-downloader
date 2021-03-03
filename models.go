@@ -42,8 +42,8 @@ type Quality struct {
 	Name   string `json:"desc"`
 }
 
-// RecordInfo represents minimal media info about parts of a complete recording.
-type RecordInfo struct {
+// RecordParts represents minimal media info about parts of a complete recording.
+type RecordParts struct {
 	List                 []RecordPart `json:"list"`
 	Size                 Size         `json:"size"`
 	Length               Duration     `json:"length"`
@@ -51,7 +51,7 @@ type RecordInfo struct {
 	Qualities            []Quality    `json:"qn_desc"`
 }
 
-func (ri *RecordInfo) Quality() string {
+func (ri *RecordParts) Quality() string {
 	for _, q := range ri.Qualities {
 		if q.Number == ri.CurrentQualityNumber {
 			return q.Name
