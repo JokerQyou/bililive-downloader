@@ -4,11 +4,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/c2h5oh/datasize"
-	"github.com/gofrs/uuid"
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/c2h5oh/datasize"
+	"github.com/gofrs/uuid"
 )
 
 type RecordPart struct {
@@ -64,6 +65,23 @@ type ApiResponse struct {
 	Message string     `json:"message"`
 	Ttl     int        `json:"ttl"`
 	Data    RecordInfo `json:"data"`
+}
+
+type LiveRecordInfo struct {
+	Title          string `json:"title"`
+	StartTimestamp int64  `json:"start_timestamp"`
+	EndTimestamp   int64  `json:"end_timestamp"`
+}
+
+type VideoData struct {
+	LiveRecord LiveRecordInfo `json:"live_record_info"`
+}
+
+type VideoApiResponse struct {
+	Code    int       `json:"code"`
+	Message string    `json:"message"`
+	Ttl     int       `json:"ttl"`
+	Data    VideoData `json:"data"`
 }
 
 type Duration struct {
