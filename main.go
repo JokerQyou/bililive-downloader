@@ -150,18 +150,13 @@ func concatRecordParts(recordInfo *RecordInfo, where, output string) error {
 	return concat.Run()
 }
 
-// fetchRecordInfo fetches record info from bilibili API.
-func fetchRecordInfo(recordId string) (*RecordInfo, error) {
+// getApi performs GET request and returns `.data` field of the API response.
+func getApi(url string) (*json.RawMessage, error) {
 	timeout, cancel := context.WithTimeout(context.Background(), time.Second*30)
 	defer cancel()
 	var buf bytes.Buffer
 
-	riReq, err := http.NewRequestWithContext(
-		timeout,
-		http.MethodGet,
-		fmt.Sprintf("https://api.live.bilibili.com/xlive/web-room/v1/record/getLiveRecordUrl?rid=%s&platform=html5", recordId),
-		&buf,
-	)
+	riReq, err := http.NewRequestWithContext(timeout, http.MethodGet, url, &buf)
 	if err != nil {
 		return nil, err
 	}
@@ -193,47 +188,28 @@ func fetchRecordInfo(recordId string) (*RecordInfo, error) {
 	return &apiResp.Data, nil
 }
 
-// fetchVideoInfo fetches video info from bilibili API.
+// fetchVideoInfo fetches video info (title & start / end time) from bilibili API.
 func fetchVideoInfo(recordId string) (*LiveRecordInfo, error) {
-	timeout, cancel := context.WithTimeout(context.Background(), time.Second*30)
-	defer cancel()
-	var buf bytes.Buffer
-
-	riReq, err := http.NewRequestWithContext(
-		timeout,
-		http.MethodGet,
-		fmt.Sprintf("https://api.live.bilibili.com/xlive/web-room/v1/record/getInfoByLiveRecord?rid=%s", recordId),
-		&buf,
-	)
+	data, err := getApi(fmt.Sprintf("https://api.live.bilibili.com/xlive/web-room/v1/record/getInfoByLiveRecord?rid=%s", recordId))
 	if err != nil {
 		return nil, err
 	}
 
-	riReq.Header = http.Header{
-		UaKey: []string{UserAgent},
-	}
-	resp, err := http.DefaultClient.Do(riReq)
+	var info LiveRecord
+	err = json.Unmarshal(*data, &info)
+	return &info.Info, err
+}
+
+// fetchRecordInfo fetches record parts list from bilibili API.
+func fetchRecordInfo(recordId string) (*RecordInfo, error) {
+	data, err := getApi(fmt.Sprintf("https://api.live.bilibili.com/xlive/web-room/v1/record/getLiveRecordUrl?rid=%s&platform=html5", recordId))
 	if err != nil {
 		return nil, err
 	}
 
-	defer resp.Body.Close()
-
-	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	var videoApiResp VideoApiResponse
-	if err := json.Unmarshal(body, &videoApiResp); err != nil {
-		return nil, err
-	}
-
-	if videoApiResp.Code != 0 {
-		return nil, fmt.Errorf("响应码=%d，响应消息=%v\n", videoApiResp.Code, videoApiResp.Message)
-	}
-
-	return &videoApiResp.Data.LiveRecord, nil
+	var info RecordInfo
+	err = json.Unmarshal(*data, &info)
+	return &info, err
 }
 
 func main() {

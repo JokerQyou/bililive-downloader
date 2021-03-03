@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"github.com/gofrs/uuid"
 	"net/url"
@@ -41,7 +42,7 @@ type Quality struct {
 	Name   string `json:"desc"`
 }
 
-// RecordInfo represents minimal media info about a complete recording.
+// RecordInfo represents minimal media info about parts of a complete recording.
 type RecordInfo struct {
 	List                 []RecordPart `json:"list"`
 	Size                 Size         `json:"size"`
@@ -61,10 +62,10 @@ func (ri *RecordInfo) Quality() string {
 
 // ApiResponse wraps general HTTP API response from bilibili.
 type ApiResponse struct {
-	Code    int        `json:"code"`
-	Message string     `json:"message"`
-	Ttl     int        `json:"ttl"`
-	Data    RecordInfo `json:"data"`
+	Code    int             `json:"code"`
+	Message string          `json:"message"`
+	Ttl     int             `json:"ttl"`
+	Data    json.RawMessage `json:"data"` // No generics, no union types, :(
 }
 
 type LiveRecordInfo struct {
@@ -73,13 +74,6 @@ type LiveRecordInfo struct {
 	EndTimestamp   int64  `json:"end_timestamp"`
 }
 
-type VideoData struct {
-	LiveRecord LiveRecordInfo `json:"live_record_info"`
-}
-
-type VideoApiResponse struct {
-	Code    int       `json:"code"`
-	Message string    `json:"message"`
-	Ttl     int       `json:"ttl"`
-	Data    VideoData `json:"data"`
+type LiveRecord struct {
+	Info LiveRecordInfo `json:"live_record_info"`
 }
