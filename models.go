@@ -1,9 +1,10 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"github.com/gofrs/uuid"
 	"net/url"
 	"strings"
 )
@@ -27,11 +28,8 @@ func (rp *RecordPart) FileName() string {
 			pp := strings.Split(u.Path, "/")
 			rp.filename = strings.ReplaceAll(pp[len(pp)-1], ":", "-")
 		} else {
-			id, err := uuid.NewV4()
-			if err != nil {
-				panic(err)
-			}
-			rp.filename = fmt.Sprintf("%s.flv", id.String())
+			urlHash := hex.EncodeToString(sha256.New().Sum([]byte(strings.Split(rp.Url, "?")[0])))
+			rp.filename = fmt.Sprintf("%s.flv", urlHash)
 		}
 	}
 	return rp.filename
