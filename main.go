@@ -234,10 +234,13 @@ func main() {
 
 	videoInfo, err := fetchRecordInfo(recordId)
 	criticalErr(err, "加载视频信息")
-	timeLayout := "2006-01-02 15:04:05"
-	startTimestamp := time.Unix(videoInfo.StartTimestamp, 0).Local().Format(timeLayout)
-
-	fmt.Printf("此直播回放的画质是 %s，共有%d部分，总大小%s，总时长%v，标题《%s》，开播时间%s\n", recordInfo.Quality(), len(recordInfo.List), recordInfo.Size, recordInfo.Length, videoInfo.Title, startTimestamp)
+	fmt.Printf(
+		"《%s》直播时间%s ~ %s，时长%v，画质：%s，总大小%s（共%d部分）\n",
+		videoInfo.Title,
+		videoInfo.Start, videoInfo.End, recordInfo.Length,
+		recordInfo.Quality(),
+		recordInfo.Size, len(recordInfo.List),
+	)
 
 	// Mkdir
 	cwd, err := os.Getwd()
@@ -246,11 +249,12 @@ func main() {
 	criticalErr(os.MkdirAll(recordDownloadDir, 0755), "建立下载目录")
 	criticalErr(downloadRecordParts(recordInfo, recordDownloadDir), "下载直播回放分段")
 
-	output := filepath.Join(recordDownloadDir, fmt.Sprintf("%s-%s-%s.mp4", startTimestamp, recordId, videoInfo.Title))
-	if len(recordInfo.List) > 1 {
+	output := filepath.Join(
+		recordDownloadDir,
+		fmt.Sprintf("%s-%s-%s.mp4", videoInfo.Start, recordId, videoInfo.Title),
+	)
+	if len(recordInfo.List) > 0 {
 		criticalErr(concatRecordParts(recordInfo, recordDownloadDir, output), "合并视频分段")
-	} else {
-		criticalErr(os.Rename(filepath.Join(recordDownloadDir, recordInfo.List[0].FileName()), output), "移动仅有的视频分段")
 	}
 	fmt.Printf("回放下载完毕: %s\n", output)
 }

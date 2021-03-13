@@ -69,9 +69,9 @@ type ApiResponse struct {
 }
 
 type LiveRecordInfo struct {
-	Title          string `json:"title"`
-	StartTimestamp int64  `json:"start_timestamp"`
-	EndTimestamp   int64  `json:"end_timestamp"`
+	Title string   `json:"title"`
+	Start JSONTime `json:"start_timestamp"`
+	End   JSONTime `json:"end_timestamp"`
 }
 
 type LiveRecord struct {
