@@ -24,11 +24,15 @@ const UaKey = "User-Agent"
 const UserAgent = "Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/55.0.2883.87 Safari/537.36"
 
 // downloadRecordParts download all parts of given livestream record into `where`.
-func downloadRecordParts(recordInfo *RecordParts, where string) error {
+func downloadRecordParts(recordInfo *RecordParts, which IntSelection, where string) error {
 	var wg sync.WaitGroup
 	progressBars := mpb.New(mpb.WithWaitGroup(&wg), mpb.WithRefreshRate(time.Millisecond*500))
 
 	for i, part := range recordInfo.List {
+		if !which.Contains(i + 1) {
+			continue
+		}
+
 		recordPart := part
 		bar := progressBars.AddBar(
 			int64(recordPart.Size.Bytes()),
@@ -241,19 +245,34 @@ func main() {
 		recordInfo.Quality(),
 		recordInfo.Size, len(recordInfo.List),
 	)
+	for i, v := range recordInfo.List {
+		fmt.Printf("%d  %s\n", i+1, v.FileName())
+	}
 
 	// Mkdir
 	cwd, err := os.Getwd()
 	criticalErr(err, "检测当前目录")
+
+	// Ask user what to do
+	downloadList, err := SelectFromList(len(recordInfo.List), "要下载哪些分段？请输入分段的序号，用英文逗号分隔。输入0来下载所有分段（合并为单个视频）")
+	if err != nil {
+		criticalErr(err, "读取用户选择")
+	}
+	fmt.Printf("将下载这些分段: %s\n", downloadList)
+
 	recordDownloadDir := filepath.Join(cwd, recordId)
 	criticalErr(os.MkdirAll(recordDownloadDir, 0755), "建立下载目录")
-	criticalErr(downloadRecordParts(recordInfo, recordDownloadDir), "下载直播回放分段")
+	criticalErr(downloadRecordParts(recordInfo, downloadList, recordDownloadDir), "下载直播回放分段")
 
+	// FIXME Output & concat logic needs to be updated for selective downloading
 	output := filepath.Join(
 		recordDownloadDir,
 		fmt.Sprintf("%s-%s-%s.mp4", videoInfo.Start, recordId, videoInfo.Title),
 	)
-	if len(recordInfo.List) > 0 {
+
+	// All parts downloaded, concat into a single file.
+	if len(downloadList) == len(recordInfo.List) {
+		fmt.Println("合并视频分段")
 		criticalErr(concatRecordParts(recordInfo, recordDownloadDir, output), "合并视频分段")
 	}
 	fmt.Printf("回放下载完毕: %s\n", output)
