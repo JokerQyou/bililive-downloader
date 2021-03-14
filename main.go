@@ -23,38 +23,65 @@ import (
 const UaKey = "User-Agent"
 const UserAgent = "Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/55.0.2883.87 Safari/537.36"
 
+var ffmpegBin string
+
+// step represents current step in a long-time file operation.
+type step struct {
+	currentStep string
+	filename    string
+}
+
+func (s *step) SetCurrentStep(name string) {
+	s.currentStep = name
+}
+func (s *step) SetFileName(name string) {
+	s.filename = name
+}
+
+func (s *step) DecorStepName(_ decor.Statistics) string {
+	return s.currentStep
+}
+
 // downloadRecordParts download all parts of given livestream record into `where`.
-func downloadRecordParts(recordInfo *RecordParts, which IntSelection, where string) error {
+// Downloaded files will also be de-capped to MPEGTS media, the intermediate FLV files will be deleted.
+func downloadRecordParts(recordInfo *RecordParts, downloadList IntSelection, where string) (filePaths map[int]string, err error) {
+	filePaths = make(map[int]string)
+	var filePathUpdater sync.Mutex
+
 	var wg sync.WaitGroup
 	progressBars := mpb.New(mpb.WithWaitGroup(&wg), mpb.WithRefreshRate(time.Millisecond*500))
 
 	for i, part := range recordInfo.List {
-		if !which.Contains(i + 1) {
+		recordPart := part
+		index := i
+		if !downloadList.Contains(index + 1) {
 			continue
 		}
 
-		recordPart := part
+		currentStep := &step{currentStep: fmt.Sprintf("下载第%d部分", index+1)}
 		bar := progressBars.AddBar(
 			int64(recordPart.Size.Bytes()),
 			mpb.PrependDecorators(
-				decor.Name(fmt.Sprintf("下载第%d部分", i+1), decor.WCSyncSpace),
+				decor.Any(currentStep.DecorStepName, decor.WCSyncSpace),
 				decor.Name(recordPart.FileName(), decor.WCSyncSpace),
 				decor.Percentage(decor.WCSyncSpace),
 			),
 			mpb.AppendDecorators(
-				decor.Current(decor.UnitKiB, "已下载 % .2f", decor.WCSyncSpace),
-				decor.Total(decor.UnitKiB, "总大小 % .2f", decor.WCSyncSpace),
+				decor.Current(decor.UnitKiB, "% .2f", decor.WCSyncSpace),
+				decor.Name("/", decor.WCSyncSpace),
+				decor.Total(decor.UnitKiB, "% .2f", decor.WCSyncSpace),
 				decor.OnComplete(decor.EwmaSpeed(decor.UnitKiB, "% .2f", 1, decor.WCSyncSpace), "完成"),
 			),
 		)
 
 		wg.Add(1)
-		go func(p *RecordPart) {
+		go func(p *RecordPart, index int) {
 			defer wg.Done()
 			start := time.Now()
 			client := grab.NewClient()
 			client.UserAgent = UserAgent
-			dlReq, err := grab.NewRequest(filepath.Join(where, p.FileName()), p.Url)
+			rawFilePath := filepath.Join(where, p.FileName())
+			dlReq, err := grab.NewRequest(rawFilePath, p.Url)
 			if err != nil {
 				return
 			}
@@ -63,6 +90,7 @@ func downloadRecordParts(recordInfo *RecordParts, which IntSelection, where stri
 			ticker := time.NewTicker(time.Millisecond * 500)
 			defer ticker.Stop()
 
+		WaitTillDownloaded:
 			for {
 				select {
 				case <-ticker.C:
@@ -72,85 +100,66 @@ func downloadRecordParts(recordInfo *RecordParts, which IntSelection, where stri
 				case <-resp.Done:
 					bar.SetCurrent(resp.BytesComplete())
 					bar.DecoratorEwmaUpdate(time.Since(start))
-					return
+					start = time.Now()
+					break WaitTillDownloaded
 				}
 			}
 
-		}(&recordPart)
+			// De-cap from FLV to MPEG TS media
+			// TODO Are we confident enough that all bilibili livestream records will be H.264 streams encapsulated in FLV containers?
+			currentStep.SetCurrentStep(fmt.Sprintf("解包第%d部分", index+1))
+			bar.SetRefill(0)
+
+			baseName := strings.Split(rawFilePath, ".")[0]
+			decappedTsFilePath := fmt.Sprintf("%s.ts", baseName)
+			timeout, cancel := context.WithTimeout(context.Background(), time.Minute*15)
+			defer cancel()
+			deCap := exec.CommandContext(timeout, ffmpegBin, "-i", rawFilePath, "-c", "copy", "-bsf:v", "h264_mp4toannexb", "-f", "mpegts", decappedTsFilePath)
+			if err := deCap.Run(); err == nil {
+				filePathUpdater.Lock()
+				defer filePathUpdater.Unlock()
+				filePaths[index+1] = decappedTsFilePath
+				bar.SetCurrent(int64(recordPart.Size.Bytes()))
+				bar.DecoratorEwmaUpdate(time.Since(start))
+				// Remove FLV file
+				os.Remove(rawFilePath)
+			}
+
+		}(&recordPart, index)
 	}
 
 	progressBars.Wait()
-	return nil
+	return
 }
 
-// concatRecordParts concatenates multiple record parts (in individual FLV files) into a single MP4 file.
-// Video parts are expected to be stored in `where`, and concatenated media files will be stored as `output`.
-// Requires `ffmpeg` binary to present in PATH.
-func concatRecordParts(recordInfo *RecordParts, where, output string) error {
+// concatRecordParts concatenates multiple record parts into a single MP4 file.
+func concatRecordParts(inputFiles map[int]string, output string) error {
 	if info, err := os.Stat(output); err == nil && info.Mode().IsRegular() {
 		return fmt.Errorf("文件 %s 已经存在", output)
 	}
 
-	// TODO Are we confident enough that all bilibili livestream records will be H.264 streams encapsulated in FLV containers?
-	// Locate ffmpeg tool
-	ffmpegBin, err := exec.LookPath("ffmpeg")
-	if err != nil {
-		return err
+	// Concat TS containers (with H.264 media) together into a single MP4 container.
+	concatList := make([]string, len(inputFiles))
+	for i, filePath := range inputFiles {
+		concatList[i-1] = filePath
 	}
 
 	progress := mpb.New(mpb.WithRefreshRate(time.Millisecond * 500))
-	deCapBar := progress.AddBar(
-		int64(len(recordInfo.List)),
-		mpb.PrependDecorators(
-			decor.Name("FLV解包", decor.WCSyncSpace),
-			decor.Percentage(decor.WCSyncSpace),
-		),
-		mpb.AppendDecorators(
-			decor.CurrentNoUnit("已完成 %d", decor.WCSyncSpace),
-			decor.TotalNoUnit("共 %d 个文件", decor.WCSyncSpace),
-		),
-	)
-
-	// De-capsulate FLV container. (FLV => TS)
-	var wg sync.WaitGroup
-	concatList := make([]string, len(recordInfo.List))
-	for i, part := range recordInfo.List {
-		recordPart := part
-
-		partFilePath := filepath.Join(where, recordPart.FileName())
-		baseName := strings.Split(filepath.Base(recordPart.FileName()), ".")[0]
-		tempFilePath := filepath.Join(os.TempDir(), fmt.Sprintf("%s.ts", baseName))
-		concatList[i] = tempFilePath
-
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			defer deCapBar.Increment()
-
-			timeout, cancel := context.WithTimeout(context.Background(), time.Minute*15)
-			defer cancel()
-			deCap := exec.CommandContext(timeout, ffmpegBin, "-i", partFilePath, "-c", "copy", "-bsf:v", "h264_mp4toannexb", "-f", "mpegts", tempFilePath)
-			deCap.Run()
-		}()
-	}
-	// Remove TS media files
-	defer func() {
-		for _, tempFile := range concatList {
-			os.Remove(tempFile)
-		}
-	}()
-
-	// Wait for all de-cap to finish because concat depends on their output files.
-	wg.Wait()
-
-	// Concat TS containers (with H.264 media) together into a single MP4 container.
 	concatBar := progress.AddBar(1, mpb.PrependDecorators(decor.Name("合并视频分段", decor.WCSyncSpace)))
 	defer concatBar.Increment()
 
 	timeout, cancel := context.WithTimeout(context.Background(), time.Minute*10)
 	defer cancel()
 
-	concat := exec.CommandContext(timeout, ffmpegBin, "-i", fmt.Sprintf("concat:%s", strings.Join(concatList, "|")), "-c", "copy", "-bsf:a", "aac_adtstoasc", "-movflags", "faststart", output)
+	concat := exec.CommandContext(
+		timeout,
+		ffmpegBin,
+		"-i", fmt.Sprintf("concat:%s", strings.Join(concatList, "|")),
+		"-c", "copy",
+		"-bsf:a", "aac_adtstoasc",
+		"-movflags", "faststart",
+		output,
+	)
 	return concat.Run()
 }
 
@@ -223,6 +232,10 @@ func main() {
 			os.Exit(1)
 		}
 	}
+	var err error
+	// Locate ffmpeg tool
+	ffmpegBin, err = exec.LookPath("ffmpeg")
+	criticalErr(err, "没有找到 ffmpeg 工具")
 
 	fmt.Print("请输入您要下载的B站直播回放链接地址: ")
 	line, _, err := bufio.NewReader(os.Stdin).ReadLine()
@@ -255,25 +268,32 @@ func main() {
 
 	// Ask user what to do
 	downloadList, err := SelectFromList(len(recordInfo.List), "要下载哪些分段？请输入分段的序号，用英文逗号分隔。输入0来下载所有分段（合并为单个视频）")
-	if err != nil {
-		criticalErr(err, "读取用户选择")
-	}
+	criticalErr(err, "读取用户选择")
 	fmt.Printf("将下载这些分段: %s\n", downloadList)
 
 	recordDownloadDir := filepath.Join(cwd, recordId)
 	criticalErr(os.MkdirAll(recordDownloadDir, 0755), "建立下载目录")
-	criticalErr(downloadRecordParts(recordInfo, downloadList, recordDownloadDir), "下载直播回放分段")
-
-	// FIXME Output & concat logic needs to be updated for selective downloading
-	output := filepath.Join(
-		recordDownloadDir,
-		fmt.Sprintf("%s-%s-%s.mp4", videoInfo.Start, recordId, videoInfo.Title),
-	)
+	decappedFiles, err := downloadRecordParts(recordInfo, downloadList, recordDownloadDir)
+	criticalErr(err, "下载直播回放分段")
 
 	// All parts downloaded, concat into a single file.
-	if len(downloadList) == len(recordInfo.List) {
-		fmt.Println("合并视频分段")
-		criticalErr(concatRecordParts(recordInfo, recordDownloadDir, output), "合并视频分段")
+	if len(downloadList) == len(recordInfo.List) && len(decappedFiles) == len(recordInfo.List) {
+		fmt.Println("所有回放分段都已下载，合并为单个视频")
+		output := filepath.Join(
+			recordDownloadDir,
+			fmt.Sprintf("%s-%s-%s-complete.mp4", videoInfo.Start, recordId, videoInfo.Title),
+		)
+		criticalErr(concatRecordParts(decappedFiles, output), "合并视频分段")
+		fmt.Printf("回放下载完毕: %s\n", output)
+		return
 	}
-	fmt.Printf("回放下载完毕: %s\n", output)
+
+	fmt.Println("下载结果:")
+	for _, i := range downloadList {
+		if filePath, ok := decappedFiles[i]; ok {
+			fmt.Printf("第%d部分: 下载完成 %s\n", i, filePath)
+		} else {
+			fmt.Printf("第%d部分: 未下载成功\n", i)
+		}
+	}
 }

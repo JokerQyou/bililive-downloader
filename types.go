@@ -69,6 +69,7 @@ func (t JSONTime) String() string {
 // IntSelection is a simple slice of integers that supports `Contains` test.
 type IntSelection []int
 
+// Contains tests whether given index was selected.
 func (s *IntSelection) Contains(i int) bool {
 	for _, j := range *s {
 		if j == i {
@@ -78,6 +79,7 @@ func (s *IntSelection) Contains(i int) bool {
 	return false
 }
 
+// String satisfies `Stringer` interface from std libs, used when formatting as a string.
 func (s IntSelection) String() string {
 	builder := strings.Builder{}
 	builder.WriteString("[ ")
@@ -95,6 +97,7 @@ func (s IntSelection) String() string {
 // If the user types `0` all the elements are considered selected.
 // The source slice is [1, last].
 // `msg` is printed before user interaction.
+// TODO How should we test this?
 func SelectFromList(last int, msg string) (IntSelection, error) {
 	var selected IntSelection
 	dedup := make(map[int]bool)
