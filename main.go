@@ -294,7 +294,7 @@ func main() {
 			fmt.Sprintf("%s-%s-%s-complete.mp4", videoInfo.Start, recordId, videoInfo.Title),
 		)
 		criticalErr(concatRecordParts(decappedFiles, output), "合并视频分段")
-		fmt.Printf("回放下载完毕: %s\n", output)
+		fmt.Printf("完整回放下载完毕: %s\n", output)
 		return
 	}
 
