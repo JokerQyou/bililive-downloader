@@ -268,8 +268,11 @@ func main() {
 		recordInfo.Quality(),
 		recordInfo.Size, len(recordInfo.List),
 	)
+	partStart := videoInfo.Start
 	for i, v := range recordInfo.List {
-		fmt.Printf("%d  %s\n", i+1, v.FileName())
+		partEnd := JSONTime{partStart.Add(v.Length.Duration)}
+		fmt.Printf("%d\t%s\t长度%s\t大小%s\t%s ~ %s\n", i+1, v.FileName(), v.Length, v.Size, partStart, partEnd)
+		partStart = partEnd
 	}
 
 	// Mkdir
@@ -283,6 +286,18 @@ func main() {
 
 	recordDownloadDir := filepath.Join(cwd, recordId)
 	criticalErr(os.MkdirAll(recordDownloadDir, 0755), "建立下载目录")
+
+	{
+		infoFile := filepath.Join(recordDownloadDir, "直播信息.txt")
+		info := strings.Builder{}
+		info.WriteString(fmt.Sprintf("直播标题：%s\n", videoInfo.Title))
+		info.WriteString(fmt.Sprintf("开始于：%s\n", videoInfo.Start))
+		info.WriteString(fmt.Sprintf("结束于：%s\n", videoInfo.End))
+		info.WriteString(fmt.Sprintf("共%d部分\n", len(recordInfo.List)))
+		info.WriteString(fmt.Sprintf("选择下载的分段：%s\n", downloadList))
+		criticalErr(ioutil.WriteFile(infoFile, []byte(info.String()), 0755), "写入直播回放信息")
+	}
+
 	decappedFiles, err := downloadRecordParts(recordInfo, downloadList, recordDownloadDir)
 	criticalErr(err, "下载直播回放分段")
 
