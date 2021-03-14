@@ -60,8 +60,8 @@ func (t *JSONTime) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-// Notice that the `Stringer` interface should be implemented on the value type itself rather than on its pointer,
-// since to print a string representation of a type instance means to consume a new copy of the given value.
+// String implements the `Stringer` interface in std libs.
+// This is just for string representation. It might not work well for filenames or part of a file path.
 func (t JSONTime) String() string {
 	return t.Local().Format("2006-01-02 15:04:05")
 }

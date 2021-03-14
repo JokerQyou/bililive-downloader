@@ -306,7 +306,13 @@ func main() {
 		fmt.Println("所有回放分段都已下载，合并为单个视频")
 		output := filepath.Join(
 			recordDownloadDir,
-			fmt.Sprintf("%s-%s-%s-complete.mp4", videoInfo.Start, recordId, videoInfo.Title),
+			fmt.Sprintf(
+				"%s-%s-%s-%s-complete.mp4",
+				strings.ReplaceAll(videoInfo.Start.String(), ":", "-"),
+				recordId,
+				videoInfo.Title,
+				recordInfo.Quality(),
+			),
 		)
 		criticalErr(concatRecordParts(decappedFiles, output), "合并视频分段")
 		fmt.Printf("完整回放下载完毕: %s\n", output)
