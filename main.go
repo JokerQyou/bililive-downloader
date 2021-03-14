@@ -148,29 +148,37 @@ func concatRecordParts(inputFiles map[int]string, output string) error {
 		return fmt.Errorf("文件 %s 已经存在", output)
 	}
 
-	// Concat TS containers (with H.264 media) together into a single MP4 container.
-	concatList := make([]string, len(inputFiles))
-	for i, filePath := range inputFiles {
-		concatList[i-1] = filePath
-	}
+	var err error
+	var wg sync.WaitGroup
+	progressBars := mpb.New(mpb.WithWaitGroup(&wg), mpb.WithRefreshRate(time.Millisecond*500))
 
-	progress := mpb.New(mpb.WithRefreshRate(time.Millisecond * 500))
-	concatBar := progress.AddBar(1, mpb.PrependDecorators(decor.Name("合并视频分段", decor.WCSyncSpace)))
-	defer concatBar.Increment()
+	wg.Add(1)
+	go func(e *error) {
+		defer wg.Done()
 
-	timeout, cancel := context.WithTimeout(context.Background(), time.Minute*10)
-	defer cancel()
+		// Concat TS containers (with H.264 media) together into a single MP4 container.
+		concatList := make([]string, len(inputFiles))
+		for i, filePath := range inputFiles {
+			concatList[i-1] = filePath
+		}
 
-	concat := exec.CommandContext(
-		timeout,
-		ffmpegBin,
-		"-i", fmt.Sprintf("concat:%s", strings.Join(concatList, "|")),
-		"-c", "copy",
-		"-bsf:a", "aac_adtstoasc",
-		"-movflags", "faststart",
-		output,
-	)
-	return concat.Run()
+		timeout, cancel := context.WithTimeout(context.Background(), time.Minute*10)
+		defer cancel()
+
+		concat := exec.CommandContext(
+			timeout,
+			ffmpegBin,
+			"-i", fmt.Sprintf("concat:%s", strings.Join(concatList, "|")),
+			"-c", "copy",
+			"-bsf:a", "aac_adtstoasc",
+			"-movflags", "faststart",
+			output,
+		)
+		*e = concat.Run()
+	}(&err)
+
+	progressBars.Wait()
+	return err
 }
 
 // getApi performs GET request and returns `.data` field of the API response.
@@ -315,6 +323,14 @@ func main() {
 			),
 		)
 		criticalErr(concatRecordParts(decappedFiles, output), "合并视频分段")
+
+		for _, i := range downloadList {
+			if filePath, ok := decappedFiles[i]; ok && filePath != "" {
+				fmt.Printf("删除文件%s\n", filePath)
+				os.Remove(filePath)
+			}
+		}
+
 		fmt.Printf("完整回放下载完毕: %s\n", output)
 		return
 	}
