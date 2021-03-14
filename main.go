@@ -78,9 +78,21 @@ func downloadRecordParts(recordInfo *RecordParts, downloadList IntSelection, whe
 		go func(p *RecordPart, index int) {
 			defer wg.Done()
 			start := time.Now()
+			rawFilePath := filepath.Join(where, p.FileName())
+			decappedTsFilePath := fmt.Sprintf("%s.ts", strings.Split(rawFilePath, ".")[0])
+
+			// Already processed (probably selectively downloaded this part before), use existing MPEGTS media as result, no need to re-download.
+			if info, err := os.Stat(decappedTsFilePath); err == nil && info.Mode().IsRegular() {
+				filePathUpdater.Lock()
+				defer filePathUpdater.Unlock()
+				filePaths[index+1] = decappedTsFilePath
+				bar.SetCurrent(int64(recordPart.Size.Bytes()))
+				bar.DecoratorEwmaUpdate(time.Since(start))
+				return
+			}
+
 			client := grab.NewClient()
 			client.UserAgent = UserAgent
-			rawFilePath := filepath.Join(where, p.FileName())
 			dlReq, err := grab.NewRequest(rawFilePath, p.Url)
 			if err != nil {
 				return
@@ -110,8 +122,6 @@ func downloadRecordParts(recordInfo *RecordParts, downloadList IntSelection, whe
 			currentStep.SetCurrentStep(fmt.Sprintf("解包第%d部分", index+1))
 			bar.SetRefill(0)
 
-			baseName := strings.Split(rawFilePath, ".")[0]
-			decappedTsFilePath := fmt.Sprintf("%s.ts", baseName)
 			timeout, cancel := context.WithTimeout(context.Background(), time.Minute*15)
 			defer cancel()
 			deCap := exec.CommandContext(timeout, ffmpegBin, "-i", rawFilePath, "-c", "copy", "-bsf:v", "h264_mp4toannexb", "-f", "mpegts", decappedTsFilePath)
