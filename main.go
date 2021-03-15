@@ -151,10 +151,12 @@ func concatRecordParts(inputFiles map[int]string, output string) error {
 	var err error
 	var wg sync.WaitGroup
 	progressBars := mpb.New(mpb.WithWaitGroup(&wg), mpb.WithRefreshRate(time.Millisecond*500))
+	bar := progressBars.AddBar(1, mpb.PrependDecorators(decor.Name("合并为单个视频", decor.WCSyncSpace)))
 
 	wg.Add(1)
 	go func(e *error) {
 		defer wg.Done()
+		defer bar.SetCurrent(1)
 
 		// Concat TS containers (with H.264 media) together into a single MP4 container.
 		concatList := make([]string, len(inputFiles))
