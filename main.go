@@ -321,6 +321,8 @@ func main() {
 	{
 		infoFile := filepath.Join(recordDownloadDir, "直播信息.txt")
 		info := strings.Builder{}
+		info.WriteString(fmt.Sprintf("直播间ID：%d\n", videoInfo.RoomID))
+		info.WriteString(fmt.Sprintf("主播UID：%d，用户名：%s\n", liverInfo.UserID, liverInfo.UserName))
 		info.WriteString(fmt.Sprintf("直播标题：%s\n", videoInfo.Title))
 		info.WriteString(fmt.Sprintf("开始于：%s\n", videoInfo.Start))
 		info.WriteString(fmt.Sprintf("结束于：%s\n", videoInfo.End))
