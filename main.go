@@ -245,6 +245,18 @@ func fetchRecordParts(recordId string) (*RecordParts, error) {
 	return &info, err
 }
 
+// fetchLiverInfo fetches info of the liver (owner of given room).
+func fetchLiverInfo(roomId int64) (*LiverInfo, error) {
+	data, err := getApi(fmt.Sprintf("https://api.live.bilibili.com/live_user/v1/UserInfo/get_anchor_in_room?roomid=%d", roomId))
+	if err != nil {
+		return nil, err
+	}
+
+	var wrapper RoomAnchorInfo
+	err = json.Unmarshal(*data, &wrapper)
+	return &wrapper.Info, err
+}
+
 func main() {
 	criticalErr := func(e error, logLine string) {
 		if e != nil {
@@ -266,13 +278,17 @@ func main() {
 	recordId = rIds[len(rIds)-1]
 	fmt.Printf("直播回放ID是 %s\n", recordId)
 
+	videoInfo, err := fetchRecordInfo(recordId)
+	criticalErr(err, "加载直播回放信息")
+	liverInfo, err := fetchLiverInfo(videoInfo.RoomID)
+	criticalErr(err, "加载主播信息")
 	recordInfo, err := fetchRecordParts(recordId)
 	criticalErr(err, "加载视频分段信息")
 
-	videoInfo, err := fetchRecordInfo(recordId)
-	criticalErr(err, "加载视频信息")
 	fmt.Printf(
-		"《%s》直播时间%s ~ %s，时长%v，画质：%s，总大小%s（共%d部分）\n",
+		"%s(UID:%d)《%s》直播时间%s ~ %s，时长%v，画质：%s，总大小%s（共%d部分）\n",
+		liverInfo.UserName,
+		liverInfo.UserID,
 		videoInfo.Title,
 		videoInfo.Start, videoInfo.End, recordInfo.Length,
 		recordInfo.Quality(),
@@ -290,12 +306,17 @@ func main() {
 	criticalErr(err, "检测当前目录")
 
 	// Ask user what to do
-	downloadList, err := SelectFromList(len(recordInfo.List), "要下载哪些分段？请输入分段的序号，用英文逗号分隔。输入0来下载所有分段（合并为单个视频）")
+	downloadList, err := SelectFromList(len(recordInfo.List), "要下载哪些分段？请输入分段的序号，用英文逗号分隔（输入0来下载所有分段并合并成单个视频）: ")
 	criticalErr(err, "读取用户选择")
 	fmt.Printf("将下载这些分段: %s\n", downloadList)
 
-	recordDownloadDir := filepath.Join(cwd, recordId)
+	recordDownloadDir := filepath.Join(
+		cwd,
+		fmt.Sprintf("%d-%s", liverInfo.UserID, liverInfo.UserName),
+		fmt.Sprintf("%s-%s", strings.ReplaceAll(videoInfo.Start.String(), ":", "-"), recordId),
+	)
 	criticalErr(os.MkdirAll(recordDownloadDir, 0755), "建立下载目录")
+	fmt.Printf("下载目录: \"%s\"\n", recordDownloadDir)
 
 	{
 		infoFile := filepath.Join(recordDownloadDir, "直播信息.txt")

@@ -67,11 +67,25 @@ type ApiResponse struct {
 }
 
 type LiveRecordInfo struct {
-	Title string   `json:"title"`
-	Start JSONTime `json:"start_timestamp"`
-	End   JSONTime `json:"end_timestamp"`
+	ID     string   `json:"rid"`
+	RoomID int64    `json:"room_id"`
+	UserID int64    `json:"uid"`
+	Title  string   `json:"title"`
+	Start  JSONTime `json:"start_timestamp"`
+	End    JSONTime `json:"end_timestamp"`
 }
 
 type LiveRecord struct {
 	Info LiveRecordInfo `json:"live_record_info"`
+}
+
+// RoomAnchorInfo wraps 大航海数据. We only need the wrapped liver info.
+type RoomAnchorInfo struct {
+	Info LiverInfo `json:"info"`
+}
+
+type LiverInfo struct {
+	Avatar   string `json:"face"`
+	UserName string `json:"uname"`
+	UserID   int64  `json:"uid"`
 }
