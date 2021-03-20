@@ -150,7 +150,7 @@ func downloadRecordParts(recordInfo *RecordParts, downloadList IntSelection, whe
 				func() {
 					downloadedFilePath, err := downloadSinglePart(downloadTask, &wg)
 					if err != nil {
-						downloadTask.ProgressBarDecorator.SetCurrentStep("出错")
+						downloadTask.ProgressBarDecorator.SetCurrentStep(fmt.Sprintf("出错: %v", err))
 					} else {
 						filePathUpdater.Lock()
 						defer filePathUpdater.Unlock()
