@@ -29,6 +29,7 @@ var ffmpegBin string
 type step struct {
 	currentStep string
 	filename    string
+	part        int
 }
 
 func (s *step) SetCurrentStep(name string) {
@@ -40,6 +41,14 @@ func (s *step) SetFileName(name string) {
 
 func (s *step) DecorStepName(_ decor.Statistics) string {
 	return s.currentStep
+}
+
+func (s *step) DecorFileName(_ decor.Statistics) string {
+	return s.filename
+}
+
+func (s *step) DecorPartName(_ decor.Statistics) string {
+	return fmt.Sprintf("第%d部分", s.part)
 }
 
 // downloadRecordParts download all parts of given livestream record into `where`.
@@ -58,12 +67,14 @@ func downloadRecordParts(recordInfo *RecordParts, downloadList IntSelection, whe
 			continue
 		}
 
-		currentStep := &step{currentStep: fmt.Sprintf("下载第%d部分", index+1)}
+		currentStep := &step{currentStep: "下载", part: index + 1}
+		currentStep.SetFileName(recordPart.FileName())
 		bar := progressBars.AddBar(
 			int64(recordPart.Size.Bytes()),
 			mpb.PrependDecorators(
 				decor.Any(currentStep.DecorStepName, decor.WCSyncSpace),
-				decor.Name(recordPart.FileName(), decor.WCSyncSpace),
+				decor.Any(currentStep.DecorPartName, decor.WCSyncSpace),
+				decor.Any(currentStep.DecorFileName, decor.WCSyncSpace),
 				decor.Percentage(decor.WCSyncSpace),
 			),
 			mpb.AppendDecorators(
@@ -88,6 +99,8 @@ func downloadRecordParts(recordInfo *RecordParts, downloadList IntSelection, whe
 				filePaths[index+1] = decappedTsFilePath
 				bar.SetCurrent(int64(recordPart.Size.Bytes()))
 				bar.DecoratorEwmaUpdate(time.Since(start))
+				currentStep.SetCurrentStep("已存在")
+				currentStep.SetFileName(filepath.Base(decappedTsFilePath))
 				return
 			}
 
@@ -119,7 +132,7 @@ func downloadRecordParts(recordInfo *RecordParts, downloadList IntSelection, whe
 
 			// De-cap from FLV to MPEG TS media
 			// TODO Are we confident enough that all bilibili livestream records will be H.264 streams encapsulated in FLV containers?
-			currentStep.SetCurrentStep(fmt.Sprintf("解包第%d部分", index+1))
+			currentStep.SetCurrentStep("解包")
 			bar.SetRefill(0)
 
 			timeout, cancel := context.WithTimeout(context.Background(), time.Minute*15)
@@ -129,6 +142,8 @@ func downloadRecordParts(recordInfo *RecordParts, downloadList IntSelection, whe
 				filePathUpdater.Lock()
 				defer filePathUpdater.Unlock()
 				filePaths[index+1] = decappedTsFilePath
+				currentStep.SetFileName(filepath.Base(decappedTsFilePath))
+				currentStep.SetCurrentStep("完成")
 				bar.SetCurrent(int64(recordPart.Size.Bytes()))
 				bar.DecoratorEwmaUpdate(time.Since(start))
 				// Remove FLV file
