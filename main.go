@@ -26,39 +26,36 @@ const UserAgent = "Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/537.36 (KHTML
 
 var ffmpegBin string
 
-// step represents current step in a long-time file operation.
-type step struct {
-	currentStep string
-	filename    string
-	part        int
+func (t *PartTask) SetCurrentStep(name string) {
+	t.currentStep = name
+}
+func (t *PartTask) SetFileName(name string) {
+	t.filename = name
 }
 
-func (s *step) SetCurrentStep(name string) {
-	s.currentStep = name
-}
-func (s *step) SetFileName(name string) {
-	s.filename = name
+func (t *PartTask) DecorStepName(_ decor.Statistics) string {
+	return t.currentStep
 }
 
-func (s *step) DecorStepName(_ decor.Statistics) string {
-	return s.currentStep
+func (t *PartTask) DecorFileName(_ decor.Statistics) string {
+	if t.filename == "" {
+		t.filename = t.Part.FileName()
+	}
+	return t.filename
 }
 
-func (s *step) DecorFileName(_ decor.Statistics) string {
-	return s.filename
-}
-
-func (s *step) DecorPartName(_ decor.Statistics) string {
-	return fmt.Sprintf("第%d部分", s.part)
+func (t *PartTask) DecorPartName(_ decor.Statistics) string {
+	return fmt.Sprintf("第%d部分", t.PartNumber)
 }
 
 // PartTask represents a single task for downloading given part of livestream recording.
 type PartTask struct {
-	PartNumber           int         // partNumber is index+1
-	Part                 *RecordPart // Part is record part info
-	DownloadDirectory    string
-	ProgressBarDecorator *step
-	ProgressBar          *mpb.Bar
+	PartNumber        int         // partNumber is index+1
+	Part              *RecordPart // Part is record part info
+	DownloadDirectory string
+	ProgressBar       *mpb.Bar
+	currentStep       string
+	filename          string
 }
 
 // downloadSinglePart downloads given part (as encoded in `task`) into given directory.
@@ -66,7 +63,6 @@ type PartTask struct {
 func downloadSinglePart(task *PartTask, wg *sync.WaitGroup) (filePath string, err error) {
 	recordPart := task.Part
 	bar := task.ProgressBar
-	currentStep := task.ProgressBarDecorator
 
 	defer wg.Done()
 	start := time.Now()
@@ -77,12 +73,12 @@ func downloadSinglePart(task *PartTask, wg *sync.WaitGroup) (filePath string, er
 	if info, err := os.Stat(decappedTsFilePath); err == nil && info.Mode().IsRegular() {
 		bar.SetCurrent(int64(recordPart.Size.Bytes()))
 		bar.DecoratorEwmaUpdate(time.Since(start))
-		currentStep.SetCurrentStep("已存在")
-		currentStep.SetFileName(filepath.Base(decappedTsFilePath))
+		task.SetCurrentStep("已存在")
+		task.SetFileName(filepath.Base(decappedTsFilePath))
 		return decappedTsFilePath, nil
 	}
 
-	currentStep.SetCurrentStep("下载中")
+	task.SetCurrentStep("下载中")
 	client := grab.NewClient()
 	client.UserAgent = UserAgent
 	dlReq, err := grab.NewRequest(rawFilePath, recordPart.Url)
@@ -111,15 +107,15 @@ WaitTillDownloaded:
 
 	// De-cap from FLV to MPEG TS media
 	// TODO Are we confident enough that all bilibili livestream records will be H.264 streams encapsulated in FLV containers?
-	currentStep.SetCurrentStep("解包")
+	task.SetCurrentStep("解包")
 	bar.SetRefill(0)
 
 	timeout, cancel := context.WithTimeout(context.Background(), time.Minute*15)
 	defer cancel()
 	deCap := exec.CommandContext(timeout, ffmpegBin, "-i", rawFilePath, "-c", "copy", "-bsf:v", "h264_mp4toannexb", "-f", "mpegts", decappedTsFilePath)
 	if err = deCap.Run(); err == nil {
-		currentStep.SetFileName(filepath.Base(decappedTsFilePath))
-		currentStep.SetCurrentStep("完成")
+		task.SetFileName(filepath.Base(decappedTsFilePath))
+		task.SetCurrentStep("完成")
 		bar.SetCurrent(int64(recordPart.Size.Bytes()))
 		bar.DecoratorEwmaUpdate(time.Since(start))
 		// Remove FLV file
@@ -150,7 +146,7 @@ func downloadRecordParts(recordInfo *RecordParts, downloadList IntSelection, whe
 				func() {
 					downloadedFilePath, err := downloadSinglePart(downloadTask, &wg)
 					if err != nil {
-						downloadTask.ProgressBarDecorator.SetCurrentStep(fmt.Sprintf("出错: %v", err))
+						downloadTask.SetCurrentStep(fmt.Sprintf("出错: %v", err))
 					} else {
 						filePathUpdater.Lock()
 						defer filePathUpdater.Unlock()
@@ -171,14 +167,19 @@ func downloadRecordParts(recordInfo *RecordParts, downloadList IntSelection, whe
 			continue
 		}
 
-		currentStep := &step{currentStep: "等待下载", part: index + 1}
-		currentStep.SetFileName(recordPart.FileName())
+		task := &PartTask{
+			PartNumber:        index + 1,
+			Part:              &recordPart,
+			DownloadDirectory: where,
+		}
+		task.SetCurrentStep("等待下载")
+		task.SetFileName(recordPart.FileName())
 		bar := progressBars.AddBar(
 			int64(recordPart.Size.Bytes()),
 			mpb.PrependDecorators(
-				decor.Any(currentStep.DecorPartName, decor.WCSyncSpace),
-				decor.Any(currentStep.DecorStepName, decor.WCSyncSpace),
-				decor.Any(currentStep.DecorFileName, decor.WCSyncSpace),
+				decor.Any(task.DecorPartName, decor.WCSyncSpace),
+				decor.Any(task.DecorStepName, decor.WCSyncSpace),
+				decor.Any(task.DecorFileName, decor.WCSyncSpace),
 				decor.Percentage(decor.WCSyncSpace),
 			),
 			mpb.AppendDecorators(
@@ -188,14 +189,8 @@ func downloadRecordParts(recordInfo *RecordParts, downloadList IntSelection, whe
 				decor.OnComplete(decor.EwmaSpeed(decor.UnitKiB, "% .2f", 1, decor.WCSyncSpace), ""),
 			),
 		)
-
-		tasks = append(tasks, &PartTask{
-			PartNumber:           index + 1,
-			Part:                 &recordPart,
-			DownloadDirectory:    where,
-			ProgressBarDecorator: currentStep,
-			ProgressBar:          bar,
-		})
+		task.ProgressBar = bar
+		tasks = append(tasks, task)
 	}
 
 	for _, task := range tasks {
