@@ -19,7 +19,7 @@ const (
 )
 
 // ProgressBar simplifies long-time operation on file(s).
-// It wraps a uiprogress.Bar instance and takes care of changing prepend & append decorations as you wish.
+// It wraps a uiprogress.Bar instance and allow dynamically changing prefix decoration and value unit as you wish.
 // A user can call `.SetPrependDecorator(*uiprogress.Bar) string` to render some text before the internal decorators.
 // The final bar will be like this: `{customPrependDecoration}\t{percentage} [bar] {current} / {total}`.
 // {percentage}, {current} and {total} are rendered by internal decorators, they don't support customization.
@@ -51,7 +51,7 @@ func (b *ProgressBar) SetCurrent(current int64) {
 // SetUnitType sets the unit used to decorate progress bar value.
 func (b *ProgressBar) SetUnitType(typ ProgressUnitType) error {
 	switch typ {
-	case UnitTypeByteSize, UnitTypeDuration:
+	case UnitTypeNumber, UnitTypeByteSize, UnitTypeDuration:
 		b.unitType = typ
 		return nil
 	default:
@@ -75,13 +75,12 @@ func (b *ProgressBar) prependDecorator(bar *uiprogress.Bar) string {
 }
 
 // appendDecorator is an internal decorator.
-// FIXME 32 chars at most.
 func (b *ProgressBar) appendDecorator(bar *uiprogress.Bar) string {
 	values := make([]string, 2)
 
 	switch b.unitType {
 	case UnitTypeNumber:
-		// FIXME Improve
+		// TODO Improve
 		values[0] = strconv.FormatInt(int64(b.Current()), 10)
 		values[1] = strconv.FormatInt(int64(b.Total), 10)
 		break
@@ -98,7 +97,7 @@ func (b *ProgressBar) appendDecorator(bar *uiprogress.Bar) string {
 		return ""
 	}
 
-	// FIXME Fill to fixed width
+	// TODO Should we fill to fixed width?
 	return fmt.Sprintf("\t%s / %s", values[0], values[1])
 }
 

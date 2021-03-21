@@ -142,5 +142,10 @@ func (r *FFmpegRunner) Run(progressCallback func(current, total int64)) error {
 
 	}()
 
-	return proc.Wait()
+	if err = proc.Wait(); err == nil && progressCallback != nil {
+		// Make sure 100% value is passed to progressCallback at least once.
+		progressCallback(r.duration.Nanoseconds(), r.duration.Nanoseconds())
+	}
+
+	return err
 }
