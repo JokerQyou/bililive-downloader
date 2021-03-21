@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"github.com/gosuri/uiprogress"
 	"io/ioutil"
+	"math"
 	"net/http"
 	"os"
 	"os/exec"
@@ -24,6 +25,7 @@ const UaKey = "User-Agent"
 const UserAgent = "Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/55.0.2883.87 Safari/537.36"
 
 var ffmpegBin string
+var ffprobeBin string
 
 func (t *PartTask) SetCurrentStep(name string) {
 	t.currentStep = name
@@ -128,19 +130,29 @@ WaitTillDecapped:
 	task.SetFileName(filepath.Base(decappedTsFilePath))
 	bar.SetUnitType(UnitTypeDuration)
 	runner := NewFFmpegRunner("-i", rawFilePath, "-c", "copy", "-bsf:v", "h264_mp4toannexb", "-f", "mpegts", decappedTsFilePath)
+	runner.ProbeMediaDuration([]string{rawFilePath})
 	runner.SetTimeout(time.Minute * 15)
-	var decapProgTotalSet bool
+	var decapProgTotal int64
 	err = runner.Run(func(current, total int64) {
-		if !decapProgTotalSet {
+		if total > decapProgTotal {
 			bar.SetTotal(total)
-			decapProgTotalSet = true
+			decapProgTotal = total
 		}
 		bar.SetCurrent(current)
 	})
 
+	// 解包后对TS媒体进行检查，如果长度相差过大则认为解包失败，保留FLV文件以供后续人工检视
+	durationMatch := func(tsDuration time.Duration) bool {
+		return math.Abs(float64(task.Part.Length.Duration-tsDuration)) < float64(time.Second*3)
+	}
 	if err == nil {
-		task.SetCurrentStep("完成")
-		os.Remove(rawFilePath)
+		task.SetCurrentStep("检查中")
+		if tsDuration, err := runner.ProbSingleMediaDuration(decappedTsFilePath); err == nil && durationMatch(tsDuration) {
+			os.Remove(rawFilePath)
+			task.SetCurrentStep("完成")
+		} else {
+			task.SetCurrentStep(fmt.Sprintf("出错: 解包后媒体长度相差%s", task.Part.Length.Duration-tsDuration))
+		}
 	} else {
 		task.SetCurrentStep(fmt.Sprintf("出错: %v", err))
 	}
@@ -187,9 +199,7 @@ func downloadRecordParts(recordInfo *RecordParts, downloadList IntSelection, whe
 		}()
 	}
 
-	// Generate tasks and progress bars.
-	// But don't block on inserting tasks, we'll do that later, because we want to show all the progress bars.
-	tasks := make([]*PartTask, 0)
+	// Generate and insert tasks.
 	for i, part := range recordInfo.List {
 		recordPart := part
 		index := i
@@ -204,10 +214,6 @@ func downloadRecordParts(recordInfo *RecordParts, downloadList IntSelection, whe
 		}
 		task.SetCurrentStep("等待下载")
 		task.SetFileName(recordPart.FileName())
-		tasks = append(tasks, task)
-	}
-
-	for _, task := range tasks {
 		taskQueue <- task
 	}
 
@@ -242,12 +248,13 @@ func concatRecordParts(inputFiles map[int]string, output string) error {
 		"-movflags", "faststart",
 		output,
 	)
+	runner.ProbeMediaDuration(concatList)
 	runner.SetTimeout(time.Minute * 20)
-	var progressTotalSet bool
+	var progressTotal int64
 	return runner.Run(func(current, total int64) {
-		if !progressTotalSet {
+		if total > progressTotal {
 			bar.SetTotal(total)
-			progressTotalSet = true
+			progressTotal = total
 		}
 		bar.SetCurrent(current)
 	})
@@ -338,6 +345,9 @@ func main() {
 	// Locate ffmpeg tool
 	ffmpegBin, err = exec.LookPath("ffmpeg")
 	criticalErr(err, "没有找到 ffmpeg 工具")
+	// Locate ffprobe tool (should be installed with ffmpeg suite)
+	ffprobeBin, err = exec.LookPath("ffprobe")
+	criticalErr(err, "没有找到 ffprobe 工具")
 
 	fmt.Print("请输入您要下载的B站直播回放链接地址: ")
 	line, _, err := bufio.NewReader(os.Stdin).ReadLine()
@@ -395,7 +405,7 @@ func main() {
 	recordDownloadDir := filepath.Join(
 		cwd,
 		fmt.Sprintf("%d-%s", liverInfo.UserID, liverInfo.UserName),
-		fmt.Sprintf("%s-%s", strings.ReplaceAll(videoInfo.Start.String(), ":", "-"), recordId),
+		fmt.Sprintf("%s-%s-%s", strings.ReplaceAll(videoInfo.Start.String(), ":", "-"), videoInfo.Title, recordId),
 	)
 	criticalErr(os.MkdirAll(recordDownloadDir, 0755), "建立下载目录")
 	fmt.Printf("下载目录: \"%s\"\n", recordDownloadDir)

@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"fmt"
 	"io"
 	"io/ioutil"
 	"os/exec"
@@ -12,10 +13,11 @@ import (
 )
 
 type FFmpegRunner struct {
-	bin      string // Location of `ffmpeg` binary executable
-	args     []string
-	duration time.Duration // Duration of current processing media
-	timeout  time.Duration
+	ffmpegBin  string // Location of `ffmpeg` binary executable
+	ffprobeBin string // Location of `ffprobe` binary executable
+	args       []string
+	duration   time.Duration // Duration of current processing media
+	timeout    time.Duration
 }
 
 // NewFFmpegRunner creates a new FFmpegRunner instance
@@ -38,7 +40,72 @@ func NewFFmpegRunner(args ...string) *FFmpegRunner {
 		fullArgs = append(fullArgs, a)
 	}
 
-	return &FFmpegRunner{args: fullArgs, bin: ffmpegBin}
+	return &FFmpegRunner{args: fullArgs, ffmpegBin: ffmpegBin, ffprobeBin: ffprobeBin}
+}
+
+// probSingleMediaDuration runs `ffprobe` command to get duration og given media file.
+// It does not touch internal state of `r`.
+func (r *FFmpegRunner) ProbSingleMediaDuration(filePath string) (time.Duration, error) {
+	var duration time.Duration
+
+	timeout, cancel := context.WithTimeout(context.Background(), time.Second*10)
+	defer cancel()
+
+	probeProc := exec.CommandContext(timeout, r.ffprobeBin, "-show_entries", "format=duration", filePath)
+	stdout, err := probeProc.StdoutPipe()
+	if err != nil {
+		return duration, err
+	}
+
+	if err := probeProc.Start(); err != nil {
+		return duration, err
+	}
+
+	var durationStr string
+	go func() {
+		scanner := bufio.NewScanner(stdout)
+		for scanner.Scan() {
+			line := scanner.Text()
+			if strings.Contains(line, "duration=") {
+				durationStr = strings.TrimSpace(strings.ReplaceAll(line, "duration=", ""))
+				break
+			}
+		}
+
+		io.Copy(ioutil.Discard, stdout)
+	}()
+
+	if err := probeProc.Wait(); err != nil {
+		return duration, err
+	}
+
+	durationSec, err := strconv.ParseFloat(durationStr, 64)
+	if err != nil {
+		return duration, err
+	}
+
+	duration = time.Duration(durationSec * float64(time.Second))
+	return duration, nil
+}
+
+// ProbeMediaDuration runs `ffprobe` command to probe given list of media files, and returns the total duration.
+// The result will be stored into `r` to be used as `total` of progress callback.
+// This is because `ffmpeg` does not reliably output durations of all the media files it's processing, so we do a manual probe instead.
+func (r *FFmpegRunner) ProbeMediaDuration(listOfFiles []string) error {
+	var duration time.Duration
+
+	for _, filePath := range listOfFiles {
+		var mediaDuration time.Duration
+		var err error
+
+		if mediaDuration, err = r.ProbSingleMediaDuration(filePath); err != nil {
+			return err
+		}
+		duration += mediaDuration
+	}
+
+	r.duration = duration
+	return nil
 }
 
 // SetTimeout sets a timeout for given FFmpegRunner instance
@@ -75,22 +142,21 @@ func parseDurationStr(str string) (time.Duration, error) {
 // Run runs the given FFmpegRunner instance (spawns ffmpeg process).
 // Pass a callback function to receive progress.
 func (r *FFmpegRunner) Run(progressCallback func(current, total int64)) error {
+	if r.duration == 0 {
+		return fmt.Errorf("total duration unknown, please call .ProbeMediaDuration first")
+	}
+
 	var proc *exec.Cmd
 	if r.timeout == 0 {
-		proc = exec.Command(r.bin, r.args...)
+		proc = exec.Command(r.ffmpegBin, r.args...)
 	} else {
 		timeout, cancel := context.WithTimeout(context.Background(), r.timeout)
 		defer cancel()
 
-		proc = exec.CommandContext(timeout, r.bin, r.args...)
+		proc = exec.CommandContext(timeout, r.ffmpegBin, r.args...)
 	}
 
 	ffmpegStdout, err := proc.StdoutPipe()
-	if err != nil {
-		return err
-	}
-
-	ffmpegStderr, err := proc.StderrPipe()
 	if err != nil {
 		return err
 	}
@@ -100,25 +166,7 @@ func (r *FFmpegRunner) Run(progressCallback func(current, total int64)) error {
 	}
 
 	go func() {
-		// Process stderr, calculate progress, and pass it to `progressCallback`
-		//ticker := time.NewTicker(time.Millisecond * 100)
-		stderrScanner := bufio.NewScanner(ffmpegStderr)
 		stdoutScanner := bufio.NewScanner(ffmpegStdout)
-
-		for stderrScanner.Scan() {
-			line := stderrScanner.Text()
-			// Set total duration of current media file
-			// Sample: `  Duration: 01:02:02.68, start: 0.000000, bitrate: 8316 kb/s`
-			if strings.Contains(line, "Duration:") && r.duration == 0 {
-				durationStr := strings.Split(strings.TrimSpace(strings.Replace(line, "Duration:", "", 1)), ",")[0]
-				if duration, err := parseDurationStr(durationStr); err == nil {
-					r.duration = duration
-					break
-				}
-			}
-		}
-
-		defer io.Copy(ioutil.Discard, ffmpegStderr)
 
 		for stdoutScanner.Scan() {
 			line := stdoutScanner.Text()
@@ -133,13 +181,12 @@ func (r *FFmpegRunner) Run(progressCallback func(current, total int64)) error {
 					return r == '='
 				})
 				if len(timeFields) == 2 {
-					if duration, err := parseDurationStr(timeFields[1]); err == nil {
-						progressCallback(duration.Nanoseconds(), r.duration.Nanoseconds())
+					if processedDuration, err := parseDurationStr(timeFields[1]); err == nil && r.duration > 0 {
+						progressCallback(processedDuration.Nanoseconds(), r.duration.Nanoseconds())
 					}
 				}
 			}
 		}
-
 	}()
 
 	if err = proc.Wait(); err == nil && progressCallback != nil {

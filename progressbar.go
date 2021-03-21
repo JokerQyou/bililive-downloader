@@ -5,6 +5,7 @@ import (
 	"github.com/c2h5oh/datasize"
 	"github.com/gosuri/uiprogress"
 	"strconv"
+	"sync"
 	"time"
 )
 
@@ -28,10 +29,14 @@ type ProgressBar struct {
 	totalSet  bool
 	unitType  ProgressUnitType
 	prepender uiprogress.DecoratorFunc
+	guard     sync.Mutex
 }
 
 // SetTotal sets the max value to given `total`, allowing dynamically changing the progress bar percentage.
 func (b *ProgressBar) SetTotal(total int64) {
+	b.guard.Lock()
+	defer b.guard.Unlock()
+
 	b.Total = int(total)
 	if !b.totalSet {
 		b.totalSet = true
@@ -111,10 +116,10 @@ func AddProgressBar(total int64) *ProgressBar {
 
 	bar := uiprogress.AddBar(int(barTotal))
 	pbar := &ProgressBar{
-		bar,
-		total != -1,
-		UnitTypeNumber,
-		nil,
+		Bar:       bar,
+		totalSet:  total != -1,
+		unitType:  UnitTypeNumber,
+		prepender: nil,
 	}
 
 	bar.PrependFunc(pbar.prependDecorator)
