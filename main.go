@@ -1,15 +1,13 @@
 package main
 
 import (
+	"bililive-downloader/models"
 	"bufio"
-	"bytes"
-	"context"
-	"encoding/json"
 	"fmt"
+	"github.com/cavaliercoder/grab"
 	"github.com/gosuri/uiprogress"
 	"io/ioutil"
 	"math"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,8 +15,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/cavaliercoder/grab"
 )
 
 const UaKey = "User-Agent"
@@ -27,49 +23,9 @@ const UserAgent = "Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/537.36 (KHTML
 var ffmpegBin string
 var ffprobeBin string
 
-func (t *PartTask) SetCurrentStep(name string) {
-	t.currentStep = name
-}
-func (t *PartTask) SetFileName(name string) {
-	t.filename = name
-}
-
-func (t *PartTask) DecorStepName() string {
-	return t.currentStep
-}
-
-func (t *PartTask) DecorFileName() string {
-	if t.filename == "" {
-		t.filename = t.Part.FileName()
-	}
-	return t.filename
-}
-
-func (t *PartTask) DecorPartName() string {
-	return fmt.Sprintf("第%d部分", t.PartNumber)
-}
-
-// PartTask represents a single task for downloading given part of livestream recording.
-type PartTask struct {
-	PartNumber        int         // partNumber is index+1
-	Part              *RecordPart // Part is record part info
-	DownloadDirectory string
-	currentStep       string
-	filename          string
-}
-
-func (t *PartTask) AddProgressBar(total int64) *ProgressBar {
-	bar := AddProgressBar(total)
-	bar.SetPrefixDecorator(func(b *uiprogress.Bar) string {
-		return fmt.Sprintf("%s\t%s\t%s\t", t.DecorPartName(), t.DecorStepName(), t.DecorFileName())
-	})
-	bar.SetUnitType(UnitTypeByteSize)
-	return bar
-}
-
 // downloadSinglePart downloads given part (as encoded in `task`) into given directory.
 // Downloaded file will also be de-capped to MPEGTS media, the intermediate FLV file will be deleted.
-func downloadSinglePart(task *PartTask) (filePath string, err error) {
+func downloadSinglePart(task *models.PartTask) (filePath string, err error) {
 	recordPart := task.Part
 
 	rawFilePath := filepath.Join(task.DownloadDirectory, recordPart.FileName())
@@ -128,7 +84,7 @@ WaitTillDecapped:
 	// TODO Are we confident enough that all bilibili livestream records will be H.264 streams encapsulated in FLV containers?
 	task.SetCurrentStep("解包")
 	task.SetFileName(filepath.Base(decappedTsFilePath))
-	bar.SetUnitType(UnitTypeDuration)
+	bar.SetUnitType(models.UnitTypeDuration)
 	runner := NewFFmpegRunner("-i", rawFilePath, "-c", "copy", "-bsf:v", "h264_mp4toannexb", "-f", "mpegts", decappedTsFilePath)
 	runner.ProbeMediaDuration([]string{rawFilePath})
 	runner.SetTimeout(time.Minute * 15)
@@ -162,8 +118,8 @@ WaitTillDecapped:
 
 // downloadRecordParts download selected parts (`downloadList`) of given livestream record into `where`.
 // It also manages the progress bar and concurrency of downloading (`concurrency`).
-func downloadRecordParts(recordInfo *RecordParts, downloadList IntSelection, where string, concurrency int) (filePaths map[int]string, err error) {
-	taskQueue := make(chan *PartTask)
+func downloadRecordParts(recordInfo *models.RecordParts, downloadList models.IntSelection, where string, concurrency int) (filePaths map[int]string, err error) {
+	taskQueue := make(chan *models.PartTask)
 
 	filePaths = make(map[int]string)
 	var filePathUpdater sync.Mutex
@@ -207,7 +163,7 @@ func downloadRecordParts(recordInfo *RecordParts, downloadList IntSelection, whe
 			continue
 		}
 
-		task := &PartTask{
+		task := &models.PartTask{
 			PartNumber:        index + 1,
 			Part:              &recordPart,
 			DownloadDirectory: where,
@@ -229,11 +185,11 @@ func concatRecordParts(inputFiles map[int]string, output string) error {
 		return fmt.Errorf("文件 %s 已经存在", output)
 	}
 
-	bar := AddProgressBar(-1)
+	bar := models.AddProgressBar(-1)
 	bar.SetPrefixDecorator(func(b *uiprogress.Bar) string {
 		return fmt.Sprintf("合并%d个视频\t%s\t", len(inputFiles), filepath.Base(output))
 	})
-	bar.SetUnitType(UnitTypeDuration)
+	bar.SetUnitType(models.UnitTypeDuration)
 
 	// Concat TS containers (with H.264 media) together into a single MP4 container.
 	concatList := make([]string, len(inputFiles))
@@ -258,80 +214,6 @@ func concatRecordParts(inputFiles map[int]string, output string) error {
 		}
 		bar.SetCurrent(current)
 	})
-}
-
-// getApi performs GET request and returns `.data` field of the API response.
-func getApi(url string) (*json.RawMessage, error) {
-	timeout, cancel := context.WithTimeout(context.Background(), time.Second*30)
-	defer cancel()
-	var buf bytes.Buffer
-
-	riReq, err := http.NewRequestWithContext(timeout, http.MethodGet, url, &buf)
-	if err != nil {
-		return nil, err
-	}
-
-	riReq.Header = http.Header{
-		UaKey: []string{UserAgent},
-	}
-	resp, err := http.DefaultClient.Do(riReq)
-	if err != nil {
-		return nil, err
-	}
-
-	defer resp.Body.Close()
-
-	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	var apiResp ApiResponse
-	if err := json.Unmarshal(body, &apiResp); err != nil {
-		return nil, err
-	}
-
-	if apiResp.Code != 0 {
-		return nil, fmt.Errorf("响应码=%d，响应消息=%v\n", apiResp.Code, apiResp.Message)
-	}
-
-	return &apiResp.Data, nil
-}
-
-// fetchRecordInfo fetches info about given livestream recording (title & start / end time) from bilibili API.
-func fetchRecordInfo(recordId string) (*LiveRecordInfo, error) {
-	data, err := getApi(fmt.Sprintf("https://api.live.bilibili.com/xlive/web-room/v1/record/getInfoByLiveRecord?rid=%s", recordId))
-	if err != nil {
-		return nil, err
-	}
-
-	var info LiveRecord
-	err = json.Unmarshal(*data, &info)
-	return &info.Info, err
-}
-
-// fetchRecordParts fetches record parts list from bilibili API.
-func fetchRecordParts(recordId string) (*RecordParts, error) {
-	data, err := getApi(fmt.Sprintf("https://api.live.bilibili.com/xlive/web-room/v1/record/getLiveRecordUrl?rid=%s&platform=html5", recordId))
-	if err != nil {
-		return nil, err
-	}
-
-	var info RecordParts
-	err = json.Unmarshal(*data, &info)
-	return &info, err
-}
-
-// fetchLiverInfo fetches info of the liver (owner of given room).
-func fetchLiverInfo(roomId int64) (*LiverInfo, error) {
-	data, err := getApi(fmt.Sprintf("https://api.live.bilibili.com/live_user/v1/UserInfo/get_anchor_in_room?roomid=%d", roomId))
-	if err != nil {
-		return nil, err
-	}
-
-	var wrapper RoomAnchorInfo
-	err = json.Unmarshal(*data, &wrapper)
-	return &wrapper.Info, err
 }
 
 func main() {
@@ -376,7 +258,7 @@ func main() {
 	)
 	partStart := videoInfo.Start
 	for i, v := range recordInfo.List {
-		partEnd := JSONTime{partStart.Add(v.Length.Duration)}
+		partEnd := models.JSONTime{partStart.Add(v.Length.Duration)}
 		fmt.Printf("%d\t%s\t长度%s\t大小%s\t%s ~ %s\n", i+1, v.FileName(), v.Length, v.Size, partStart, partEnd)
 		partStart = partEnd
 	}
@@ -386,7 +268,7 @@ func main() {
 	criticalErr(err, "检测当前目录")
 
 	// Ask user what to do
-	downloadList, err := SelectFromList(len(recordInfo.List), "要下载哪些分段？请输入分段的序号，用英文逗号分隔（输入0来下载所有分段并合并成单个视频）: ")
+	downloadList, err := models.SelectFromList(len(recordInfo.List), "要下载哪些分段？请输入分段的序号，用英文逗号分隔（输入0来下载所有分段并合并成单个视频）: ")
 	criticalErr(err, "读取用户选择")
 	fmt.Printf("将下载这些分段: %s\n", downloadList)
 

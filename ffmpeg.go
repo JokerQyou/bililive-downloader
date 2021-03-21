@@ -88,7 +88,7 @@ func (r *FFmpegRunner) ProbSingleMediaDuration(filePath string) (time.Duration, 
 	return duration, nil
 }
 
-// ProbeMediaDuration runs `ffprobe` command to probe given list of media files, and returns the total duration.
+// ProbeMediaDuration runs `ffprobe` command to probe given list of media files.
 // The result will be stored into `r` to be used as `total` of progress callback.
 // This is because `ffmpeg` does not reliably output durations of all the media files it's processing, so we do a manual probe instead.
 func (r *FFmpegRunner) ProbeMediaDuration(listOfFiles []string) error {
