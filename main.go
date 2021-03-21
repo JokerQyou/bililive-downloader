@@ -171,6 +171,7 @@ func downloadRecordParts(recordInfo *RecordParts, downloadList IntSelection, whe
 
 			for task := range taskQueue {
 				downloadTask := task
+				time.Sleep(time.Millisecond * 20 * time.Duration(downloadTask.PartNumber))
 
 				func() {
 					downloadedFilePath, err := downloadSinglePart(downloadTask)
