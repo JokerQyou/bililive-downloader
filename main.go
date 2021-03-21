@@ -88,11 +88,11 @@ WaitTillDecapped:
 	runner := NewFFmpegRunner("-i", rawFilePath, "-c", "copy", "-bsf:v", "h264_mp4toannexb", "-f", "mpegts", decappedTsFilePath)
 	runner.ProbeMediaDuration([]string{rawFilePath})
 	runner.SetTimeout(time.Minute * 15)
-	var decapProgTotal int64
+	var decapProgTotalSet bool
 	err = runner.Run(func(current, total int64) {
-		if total > decapProgTotal {
+		if !decapProgTotalSet {
 			bar.SetTotal(total)
-			decapProgTotal = total
+			decapProgTotalSet = true
 		}
 		bar.SetCurrent(current)
 	})
@@ -206,11 +206,11 @@ func concatRecordParts(inputFiles map[int]string, output string) error {
 	)
 	runner.ProbeMediaDuration(concatList)
 	runner.SetTimeout(time.Minute * 20)
-	var progressTotal int64
+	var progTotalSet bool
 	return runner.Run(func(current, total int64) {
-		if total > progressTotal {
+		if !progTotalSet {
 			bar.SetTotal(total)
-			progressTotal = total
+			progTotalSet = true
 		}
 		bar.SetCurrent(current)
 	})
