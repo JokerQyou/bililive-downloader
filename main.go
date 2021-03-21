@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/c2h5oh/datasize"
 	"github.com/gosuri/uiprogress"
 	"io/ioutil"
 	"net/http"
@@ -59,12 +58,10 @@ type PartTask struct {
 
 func (t *PartTask) AddProgressBar(total int64) *ProgressBar {
 	bar := AddProgressBar(total)
-	bar.PrependFunc(func(b *uiprogress.Bar) string {
-		return fmt.Sprintf("%s\t%s\t%s\t%.2f%%\t", t.DecorPartName(), t.DecorStepName(), t.DecorFileName(), bar.CompletedPercent())
+	bar.SetPrefixDecorator(func(b *uiprogress.Bar) string {
+		return fmt.Sprintf("%s\t%s\t%s\t", t.DecorPartName(), t.DecorStepName(), t.DecorFileName())
 	})
-	bar.AppendFunc(func(b *uiprogress.Bar) string {
-		return fmt.Sprintf("\t%s\t/\t%s", datasize.ByteSize(bar.Current()).HumanReadable(), datasize.ByteSize(bar.Total).HumanReadable())
-	})
+	bar.SetUnitType(UnitTypeByteSize)
 	return bar
 }
 
@@ -129,6 +126,7 @@ WaitTillDecapped:
 	// TODO Are we confident enough that all bilibili livestream records will be H.264 streams encapsulated in FLV containers?
 	task.SetCurrentStep("解包")
 	task.SetFileName(filepath.Base(decappedTsFilePath))
+	bar.SetUnitType(UnitTypeDuration)
 	runner := NewFFmpegRunner("-i", rawFilePath, "-c", "copy", "-bsf:v", "h264_mp4toannexb", "-f", "mpegts", decappedTsFilePath)
 	runner.SetTimeout(time.Minute * 15)
 	var decapProgTotalSet bool
@@ -225,12 +223,10 @@ func concatRecordParts(inputFiles map[int]string, output string) error {
 	}
 
 	bar := AddProgressBar(-1)
-	bar.PrependFunc(func(b *uiprogress.Bar) string {
-		return fmt.Sprintf("合并%d个视频\t%s\t%.2f%%\t", len(inputFiles), filepath.Base(output), b.CompletedPercent())
+	bar.SetPrefixDecorator(func(b *uiprogress.Bar) string {
+		return fmt.Sprintf("合并%d个视频\t%s\t", len(inputFiles), filepath.Base(output))
 	})
-	bar.AppendFunc(func(b *uiprogress.Bar) string {
-		return fmt.Sprintf("\t%s\t/\t%s", Duration{time.Duration(b.Current())}.String(), Duration{time.Duration(b.Total)}.String())
-	})
+	bar.SetUnitType(UnitTypeDuration)
 
 	// Concat TS containers (with H.264 media) together into a single MP4 container.
 	concatList := make([]string, len(inputFiles))

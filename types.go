@@ -27,6 +27,10 @@ func (d *Duration) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
+func (d Duration) String() string {
+	return d.Duration.Truncate(time.Millisecond * 10).String()
+}
+
 // Size is a file size type which always evaluates to human-readable form.
 // It also supports direct JSON-unmarshalling.
 type Size struct {
