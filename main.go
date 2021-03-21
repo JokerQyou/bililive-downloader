@@ -6,6 +6,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/c2h5oh/datasize"
+	"github.com/gosuri/uiprogress"
 	"io/ioutil"
 	"net/http"
 	"os"
@@ -17,8 +19,6 @@ import (
 	"time"
 
 	"github.com/cavaliercoder/grab"
-	"github.com/vbauerster/mpb/v6"
-	"github.com/vbauerster/mpb/v6/decor"
 )
 
 const UaKey = "User-Agent"
@@ -33,18 +33,18 @@ func (t *PartTask) SetFileName(name string) {
 	t.filename = name
 }
 
-func (t *PartTask) DecorStepName(_ decor.Statistics) string {
+func (t *PartTask) DecorStepName() string {
 	return t.currentStep
 }
 
-func (t *PartTask) DecorFileName(_ decor.Statistics) string {
+func (t *PartTask) DecorFileName() string {
 	if t.filename == "" {
 		t.filename = t.Part.FileName()
 	}
 	return t.filename
 }
 
-func (t *PartTask) DecorPartName(_ decor.Statistics) string {
+func (t *PartTask) DecorPartName() string {
 	return fmt.Sprintf("第%d部分", t.PartNumber)
 }
 
@@ -53,41 +53,64 @@ type PartTask struct {
 	PartNumber        int         // partNumber is index+1
 	Part              *RecordPart // Part is record part info
 	DownloadDirectory string
-	ProgressBar       *mpb.Bar
 	currentStep       string
 	filename          string
 }
 
+func (t *PartTask) AddProgressBar(total int64) *ProgressBar {
+	bar := AddProgressBar(total)
+	bar.PrependFunc(func(b *uiprogress.Bar) string {
+		return fmt.Sprintf("%s\t%s\t%s\t%.2f%%\t", t.DecorPartName(), t.DecorStepName(), t.DecorFileName(), bar.CompletedPercent())
+	})
+	bar.AppendFunc(func(b *uiprogress.Bar) string {
+		return fmt.Sprintf("\t%s\t/\t%s", datasize.ByteSize(bar.Current()).HumanReadable(), datasize.ByteSize(bar.Total).HumanReadable())
+	})
+	return bar
+}
+
 // downloadSinglePart downloads given part (as encoded in `task`) into given directory.
 // Downloaded file will also be de-capped to MPEGTS media, the intermediate FLV file will be deleted.
-func downloadSinglePart(task *PartTask, wg *sync.WaitGroup) (filePath string, err error) {
+func downloadSinglePart(task *PartTask) (filePath string, err error) {
 	recordPart := task.Part
-	bar := task.ProgressBar
 
-	defer wg.Done()
-	start := time.Now()
 	rawFilePath := filepath.Join(task.DownloadDirectory, recordPart.FileName())
 	decappedTsFilePath := fmt.Sprintf("%s.ts", strings.Split(rawFilePath, ".")[0])
 
+	bar := task.AddProgressBar(-1)
+
 	// Already processed (probably selectively downloaded this part before), use existing MPEGTS media as result, no need to re-download.
 	if info, err := os.Stat(decappedTsFilePath); err == nil && info.Mode().IsRegular() {
-		bar.SetCurrent(int64(recordPart.Size.Bytes()))
-		bar.DecoratorEwmaUpdate(time.Since(start))
 		task.SetCurrentStep("已存在")
 		task.SetFileName(filepath.Base(decappedTsFilePath))
+		bar.SetTotal(info.Size())
+		bar.SetCurrent(info.Size())
 		return decappedTsFilePath, nil
 	}
 
+	var client *grab.Client
+	var dlReq *grab.Request
+	var resp *grab.Response
+	var ticker *time.Ticker
+
+	// Already downloaded, directly proceed to de-cap, skip downloading.
+	if info, err := os.Stat(rawFilePath); err == nil && info.Size() == int64(recordPart.Size.Bytes()) {
+		task.SetCurrentStep("已下载")
+		bar.SetTotal(info.Size())
+		bar.SetCurrent(info.Size())
+		goto WaitTillDecapped
+	}
+
+	bar.SetTotal(int64(task.Part.Size.Bytes()))
 	task.SetCurrentStep("下载中")
-	client := grab.NewClient()
+	client = grab.NewClient()
 	client.UserAgent = UserAgent
-	dlReq, err := grab.NewRequest(rawFilePath, recordPart.Url)
+	dlReq, err = grab.NewRequest(rawFilePath, recordPart.Url)
 	if err != nil {
 		return
 	}
 
-	resp := client.Do(dlReq)
-	ticker := time.NewTicker(time.Millisecond * 500)
+	resp = client.Do(dlReq)
+	ticker = time.NewTicker(time.Millisecond * 120)
 	defer ticker.Stop()
 
 WaitTillDownloaded:
@@ -95,35 +118,36 @@ WaitTillDownloaded:
 		select {
 		case <-ticker.C:
 			bar.SetCurrent(resp.BytesComplete())
-			bar.DecoratorEwmaUpdate(time.Since(start))
-			start = time.Now()
 		case <-resp.Done:
 			bar.SetCurrent(resp.BytesComplete())
-			bar.DecoratorEwmaUpdate(time.Since(start))
-			start = time.Now()
 			break WaitTillDownloaded
 		}
 	}
 
+WaitTillDecapped:
 	// De-cap from FLV to MPEG TS media
 	// TODO Are we confident enough that all bilibili livestream records will be H.264 streams encapsulated in FLV containers?
 	task.SetCurrentStep("解包")
-	bar.SetRefill(0)
+	task.SetFileName(filepath.Base(decappedTsFilePath))
+	runner := NewFFmpegRunner("-i", rawFilePath, "-c", "copy", "-bsf:v", "h264_mp4toannexb", "-f", "mpegts", decappedTsFilePath)
+	runner.SetTimeout(time.Minute * 15)
+	var decapProgTotalSet bool
+	err = runner.Run(func(current, total int64) {
+		if !decapProgTotalSet {
+			bar.SetTotal(total)
+			decapProgTotalSet = true
+		}
+		bar.SetCurrent(current)
+	})
 
-	timeout, cancel := context.WithTimeout(context.Background(), time.Minute*15)
-	defer cancel()
-	deCap := exec.CommandContext(timeout, ffmpegBin, "-i", rawFilePath, "-c", "copy", "-bsf:v", "h264_mp4toannexb", "-f", "mpegts", decappedTsFilePath)
-	if err = deCap.Run(); err == nil {
-		task.SetFileName(filepath.Base(decappedTsFilePath))
+	if err == nil {
 		task.SetCurrentStep("完成")
-		bar.SetCurrent(int64(recordPart.Size.Bytes()))
-		bar.DecoratorEwmaUpdate(time.Since(start))
-		// Remove FLV file
 		os.Remove(rawFilePath)
-		return decappedTsFilePath, nil
+	} else {
+		task.SetCurrentStep(fmt.Sprintf("出错: %v", err))
 	}
 
-	return "", err
+	return decappedTsFilePath, err
 }
 
 // downloadRecordParts download selected parts (`downloadList`) of given livestream record into `where`.
@@ -135,16 +159,23 @@ func downloadRecordParts(recordInfo *RecordParts, downloadList IntSelection, whe
 	var filePathUpdater sync.Mutex
 
 	var wg sync.WaitGroup
-	wg.Add(len(downloadList))
-	progressBars := mpb.New(mpb.WithWaitGroup(&wg), mpb.WithRefreshRate(time.Millisecond*500))
 
-	fmt.Printf("下载并发数 %d\n", concurrency)
+	if concurrency > len(downloadList) {
+		concurrency = len(downloadList)
+		fmt.Printf("已自动调整下载并发数为 %d\n", concurrency)
+	} else {
+		fmt.Printf("下载并发数 %d\n", concurrency)
+	}
 	for i := 0; i < concurrency; i++ {
+		wg.Add(1)
 		go func() {
+			defer wg.Done()
+
 			for task := range taskQueue {
 				downloadTask := task
+
 				func() {
-					downloadedFilePath, err := downloadSinglePart(downloadTask, &wg)
+					downloadedFilePath, err := downloadSinglePart(downloadTask)
 					if err != nil {
 						downloadTask.SetCurrentStep(fmt.Sprintf("出错: %v", err))
 					} else {
@@ -174,22 +205,6 @@ func downloadRecordParts(recordInfo *RecordParts, downloadList IntSelection, whe
 		}
 		task.SetCurrentStep("等待下载")
 		task.SetFileName(recordPart.FileName())
-		bar := progressBars.AddBar(
-			int64(recordPart.Size.Bytes()),
-			mpb.PrependDecorators(
-				decor.Any(task.DecorPartName, decor.WCSyncSpace),
-				decor.Any(task.DecorStepName, decor.WCSyncSpace),
-				decor.Any(task.DecorFileName, decor.WCSyncSpace),
-				decor.Percentage(decor.WCSyncSpace),
-			),
-			mpb.AppendDecorators(
-				decor.Current(decor.UnitKiB, "% .2f", decor.WCSyncSpace),
-				decor.Name("/", decor.WCSyncSpace),
-				decor.Total(decor.UnitKiB, "% .2f", decor.WCSyncSpace),
-				decor.OnComplete(decor.EwmaSpeed(decor.UnitKiB, "% .2f", 1, decor.WCSyncSpace), ""),
-			),
-		)
-		task.ProgressBar = bar
 		tasks = append(tasks, task)
 	}
 
@@ -197,7 +212,9 @@ func downloadRecordParts(recordInfo *RecordParts, downloadList IntSelection, whe
 		taskQueue <- task
 	}
 
-	progressBars.Wait()
+	close(taskQueue)
+	wg.Wait()
+
 	return
 }
 
@@ -207,39 +224,36 @@ func concatRecordParts(inputFiles map[int]string, output string) error {
 		return fmt.Errorf("文件 %s 已经存在", output)
 	}
 
-	var err error
-	var wg sync.WaitGroup
-	progressBars := mpb.New(mpb.WithWaitGroup(&wg), mpb.WithRefreshRate(time.Millisecond*500))
-	bar := progressBars.AddBar(1, mpb.PrependDecorators(decor.Name("合并为单个视频", decor.WCSyncSpace)))
+	bar := AddProgressBar(-1)
+	bar.PrependFunc(func(b *uiprogress.Bar) string {
+		return fmt.Sprintf("合并%d个视频\t%s\t%.2f%%\t", len(inputFiles), filepath.Base(output), b.CompletedPercent())
+	})
+	bar.AppendFunc(func(b *uiprogress.Bar) string {
+		return fmt.Sprintf("\t%s\t/\t%s", Duration{time.Duration(b.Current())}.String(), Duration{time.Duration(b.Total)}.String())
+	})
 
-	wg.Add(1)
-	go func(e *error) {
-		defer wg.Done()
-		defer bar.SetCurrent(1)
+	// Concat TS containers (with H.264 media) together into a single MP4 container.
+	concatList := make([]string, len(inputFiles))
+	for i, filePath := range inputFiles {
+		concatList[i-1] = filePath
+	}
 
-		// Concat TS containers (with H.264 media) together into a single MP4 container.
-		concatList := make([]string, len(inputFiles))
-		for i, filePath := range inputFiles {
-			concatList[i-1] = filePath
+	runner := NewFFmpegRunner(
+		"-i", fmt.Sprintf("concat:%s", strings.Join(concatList, "|")),
+		"-c", "copy",
+		"-bsf:a", "aac_adtstoasc",
+		"-movflags", "faststart",
+		output,
+	)
+	runner.SetTimeout(time.Minute * 20)
+	var progressTotalSet bool
+	return runner.Run(func(current, total int64) {
+		if !progressTotalSet {
+			bar.SetTotal(total)
+			progressTotalSet = true
 		}
-
-		timeout, cancel := context.WithTimeout(context.Background(), time.Minute*10)
-		defer cancel()
-
-		concat := exec.CommandContext(
-			timeout,
-			ffmpegBin,
-			"-i", fmt.Sprintf("concat:%s", strings.Join(concatList, "|")),
-			"-c", "copy",
-			"-bsf:a", "aac_adtstoasc",
-			"-movflags", "faststart",
-			output,
-		)
-		*e = concat.Run()
-	}(&err)
-
-	progressBars.Wait()
-	return err
+		bar.SetCurrent(current)
+	})
 }
 
 // getApi performs GET request and returns `.data` field of the API response.
@@ -402,6 +416,8 @@ func main() {
 		criticalErr(ioutil.WriteFile(infoFile, []byte(info.String()), 0755), "写入直播回放信息")
 	}
 
+	uiprogress.Start()
+
 	decappedFiles, err := downloadRecordParts(recordInfo, downloadList, recordDownloadDir, concurrency)
 	criticalErr(err, "下载直播回放分段")
 
@@ -419,6 +435,7 @@ func main() {
 			),
 		)
 		criticalErr(concatRecordParts(decappedFiles, output), "合并视频分段")
+		uiprogress.Stop()
 
 		for _, i := range downloadList {
 			if filePath, ok := decappedFiles[i]; ok && filePath != "" {
@@ -429,6 +446,8 @@ func main() {
 
 		fmt.Printf("完整回放下载完毕: %s\n", output)
 		return
+	} else {
+		uiprogress.Stop()
 	}
 
 	fmt.Println("下载结果:")
