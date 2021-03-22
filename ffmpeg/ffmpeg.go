@@ -1,18 +1,33 @@
-package main
+package ffmpeg
 
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
-type FFmpegRunner struct {
+var ffmpegBin string
+var ffprobeBin string
+var initGuard sync.Once
+
+// Init sets the location of `ffmpeg` and `ffprobe` binary executable.
+// No runner can be created before this function is called.
+func Init(ffmpegBinLocation, ffprobeBinLocation string) {
+	initGuard.Do(func() {
+		ffmpegBin = ffmpegBinLocation
+		ffprobeBin = ffprobeBinLocation
+	})
+}
+
+type Runner struct {
 	ffmpegBin  string // Location of `ffmpeg` binary executable
 	ffprobeBin string // Location of `ffprobe` binary executable
 	args       []string
@@ -20,8 +35,15 @@ type FFmpegRunner struct {
 	timeout    time.Duration
 }
 
-// NewFFmpegRunner creates a new FFmpegRunner instance
-func NewFFmpegRunner(args ...string) *FFmpegRunner {
+// NewRunner creates a new Runner instance
+func NewRunner(args ...string) (*Runner, error) {
+	if ffmpegBin == "" {
+		return nil, errors.New("ffmpeg not located, you should probably call Init first")
+	}
+	if ffprobeBin == "" {
+		return nil, errors.New("ffprobe not located, you should probably call Init first")
+	}
+
 	fullArgs := []string{"-progress", "-", "-nostats"}
 
 	var progValueIndex int
@@ -40,12 +62,12 @@ func NewFFmpegRunner(args ...string) *FFmpegRunner {
 		fullArgs = append(fullArgs, a)
 	}
 
-	return &FFmpegRunner{args: fullArgs, ffmpegBin: ffmpegBin, ffprobeBin: ffprobeBin}
+	return &Runner{args: fullArgs, ffmpegBin: ffmpegBin, ffprobeBin: ffprobeBin}, nil
 }
 
 // probSingleMediaDuration runs `ffprobe` command to get duration og given media file.
 // It does not touch internal state of `r`.
-func (r *FFmpegRunner) ProbSingleMediaDuration(filePath string) (time.Duration, error) {
+func (r *Runner) ProbSingleMediaDuration(filePath string) (time.Duration, error) {
 	var duration time.Duration
 
 	timeout, cancel := context.WithTimeout(context.Background(), time.Second*10)
@@ -91,7 +113,7 @@ func (r *FFmpegRunner) ProbSingleMediaDuration(filePath string) (time.Duration, 
 // ProbeMediaDuration runs `ffprobe` command to probe given list of media files.
 // The result will be stored into `r` to be used as `total` of progress callback.
 // This is because `ffmpeg` does not reliably output durations of all the media files it's processing, so we do a manual probe instead.
-func (r *FFmpegRunner) ProbeMediaDuration(listOfFiles []string) error {
+func (r *Runner) ProbeMediaDuration(listOfFiles []string) error {
 	var duration time.Duration
 
 	for _, filePath := range listOfFiles {
@@ -108,8 +130,8 @@ func (r *FFmpegRunner) ProbeMediaDuration(listOfFiles []string) error {
 	return nil
 }
 
-// SetTimeout sets a timeout for given FFmpegRunner instance
-func (r *FFmpegRunner) SetTimeout(timeout time.Duration) {
+// SetTimeout sets a timeout for given Runner instance
+func (r *Runner) SetTimeout(timeout time.Duration) {
 	r.timeout = timeout
 }
 
@@ -139,9 +161,9 @@ func parseDurationStr(str string) (time.Duration, error) {
 	return time.Duration(durationNs), err
 }
 
-// Run runs the given FFmpegRunner instance (spawns ffmpeg process).
+// Run runs the given Runner instance (spawns ffmpeg process).
 // Pass a callback function to receive progress.
-func (r *FFmpegRunner) Run(progressCallback func(current, total int64)) error {
+func (r *Runner) Run(progressCallback func(current, total int64)) error {
 	if r.duration == 0 {
 		return fmt.Errorf("total duration unknown, please call .ProbeMediaDuration first")
 	}

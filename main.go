@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bililive-downloader/ffmpeg"
 	"bililive-downloader/models"
 	"bufio"
 	"fmt"
@@ -19,9 +20,6 @@ import (
 
 const UaKey = "User-Agent"
 const UserAgent = "Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/55.0.2883.87 Safari/537.36"
-
-var ffmpegBin string
-var ffprobeBin string
 
 // downloadSinglePart downloads given part (as encoded in `task`) into given directory.
 // Downloaded file will also be de-capped to MPEGTS media, the intermediate FLV file will be deleted.
@@ -85,7 +83,7 @@ WaitTillDecapped:
 	task.SetCurrentStep("解包")
 	task.SetFileName(filepath.Base(decappedTsFilePath))
 	bar.SetUnitType(models.UnitTypeDuration)
-	runner := NewFFmpegRunner("-i", rawFilePath, "-c", "copy", "-bsf:v", "h264_mp4toannexb", "-f", "mpegts", decappedTsFilePath)
+	runner, _ := ffmpeg.NewRunner("-i", rawFilePath, "-c", "copy", "-bsf:v", "h264_mp4toannexb", "-f", "mpegts", decappedTsFilePath)
 	runner.ProbeMediaDuration([]string{rawFilePath})
 	runner.SetTimeout(time.Minute * 15)
 	var decapProgTotalSet bool
@@ -197,7 +195,7 @@ func concatRecordParts(inputFiles map[int]string, output string) error {
 		concatList[i-1] = filePath
 	}
 
-	runner := NewFFmpegRunner(
+	runner, _ := ffmpeg.NewRunner(
 		"-i", fmt.Sprintf("concat:%s", strings.Join(concatList, "|")),
 		"-c", "copy",
 		"-bsf:a", "aac_adtstoasc",
@@ -223,13 +221,14 @@ func main() {
 			os.Exit(1)
 		}
 	}
-	var err error
+
 	// Locate ffmpeg tool
-	ffmpegBin, err = exec.LookPath("ffmpeg")
+	ffmpegBin, err := exec.LookPath("ffmpeg")
 	criticalErr(err, "没有找到 ffmpeg 工具")
 	// Locate ffprobe tool (should be installed with ffmpeg suite)
-	ffprobeBin, err = exec.LookPath("ffprobe")
+	ffprobeBin, err := exec.LookPath("ffprobe")
 	criticalErr(err, "没有找到 ffprobe 工具")
+	ffmpeg.Init(ffmpegBin, ffprobeBin)
 
 	fmt.Print("请输入您要下载的B站直播回放链接地址: ")
 	line, _, err := bufio.NewReader(os.Stdin).ReadLine()
