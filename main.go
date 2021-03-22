@@ -2,7 +2,9 @@ package main
 
 import (
 	"bililive-downloader/ffmpeg"
+	"bililive-downloader/helper"
 	"bililive-downloader/models"
+	"bililive-downloader/progressbar"
 	"bufio"
 	"fmt"
 	"github.com/cavaliercoder/grab"
@@ -82,7 +84,7 @@ WaitTillDecapped:
 	// TODO Are we confident enough that all bilibili livestream records will be H.264 streams encapsulated in FLV containers?
 	task.SetCurrentStep("解包")
 	task.SetFileName(filepath.Base(decappedTsFilePath))
-	bar.SetUnitType(models.UnitTypeDuration)
+	bar.SetUnitType(progressbar.UnitTypeDuration)
 	runner, _ := ffmpeg.NewRunner("-i", rawFilePath, "-c", "copy", "-bsf:v", "h264_mp4toannexb", "-f", "mpegts", decappedTsFilePath)
 	runner.ProbeMediaDuration([]string{rawFilePath})
 	runner.SetTimeout(time.Minute * 15)
@@ -183,11 +185,11 @@ func concatRecordParts(inputFiles map[int]string, output string) error {
 		return fmt.Errorf("文件 %s 已经存在", output)
 	}
 
-	bar := models.AddProgressBar(-1)
+	bar := progressbar.AddProgressBar(-1)
 	bar.SetPrefixDecorator(func(b *uiprogress.Bar) string {
 		return fmt.Sprintf("合并%d个视频\t%s\t", len(inputFiles), filepath.Base(output))
 	})
-	bar.SetUnitType(models.UnitTypeDuration)
+	bar.SetUnitType(progressbar.UnitTypeDuration)
 
 	// Concat TS containers (with H.264 media) together into a single MP4 container.
 	concatList := make([]string, len(inputFiles))
@@ -222,13 +224,21 @@ func main() {
 		}
 	}
 
-	// Locate ffmpeg tool
+	// Setup ffmpeg tools
 	ffmpegBin, err := exec.LookPath("ffmpeg")
 	criticalErr(err, "没有找到 ffmpeg 工具")
-	// Locate ffprobe tool (should be installed with ffmpeg suite)
 	ffprobeBin, err := exec.LookPath("ffprobe")
 	criticalErr(err, "没有找到 ffprobe 工具")
 	ffmpeg.Init(ffmpegBin, ffprobeBin)
+
+	// Setup progress bar manager only if we're connected to a TTY
+	if info, _ := os.Stdout.Stat(); info.Mode()&os.ModeCharDevice != 0 {
+		// TODO logging
+		progressbar.Init(os.Stdout)
+	} else {
+		// TODO progress disabled, logging
+		progressbar.Init(ioutil.Discard)
+	}
 
 	fmt.Print("请输入您要下载的B站直播回放链接地址: ")
 	line, _, err := bufio.NewReader(os.Stdin).ReadLine()
@@ -257,7 +267,7 @@ func main() {
 	)
 	partStart := videoInfo.Start
 	for i, v := range recordInfo.List {
-		partEnd := models.JSONTime{partStart.Add(v.Length.Duration)}
+		partEnd := helper.JSONTime{partStart.Add(v.Length.Duration)}
 		fmt.Printf("%d\t%s\t长度%s\t大小%s\t%s ~ %s\n", i+1, v.FileName(), v.Length, v.Size, partStart, partEnd)
 		partStart = partEnd
 	}

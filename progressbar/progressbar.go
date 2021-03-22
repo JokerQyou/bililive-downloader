@@ -1,23 +1,37 @@
-package models
+package progressbar
 
 import (
+	"bililive-downloader/helper"
 	"fmt"
 	"github.com/c2h5oh/datasize"
 	"github.com/gosuri/uiprogress"
+	"io"
 	"strconv"
 	"sync"
 	"time"
 )
 
-const TotalPlaceholder = 999
-
 type ProgressUnitType int
 
+// 10 fps is enough. Some terminal emulator cannot handle high refresh rates.
+const defaultFreshRate = time.Millisecond * 100
+const TotalPlaceholder = 999
 const (
 	UnitTypeNumber   ProgressUnitType = iota // Render as original number
 	UnitTypeByteSize                         // Render as byte size
 	UnitTypeDuration                         // Render as time duration (nanoseconds)
 )
+
+var defaultManager *uiprogress.Progress
+var initGuard sync.Once
+
+func Init(output io.Writer) {
+	initGuard.Do(func() {
+		defaultManager = uiprogress.New()
+		defaultManager.RefreshInterval = defaultFreshRate
+		defaultManager.SetOut(output)
+	})
+}
 
 // ProgressBar simplifies long-time operation on file(s).
 // It wraps a uiprogress.Bar instance and allow dynamically changing prefix decoration and value unit as you wish.
@@ -95,8 +109,8 @@ func (b *ProgressBar) appendDecorator(bar *uiprogress.Bar) string {
 		break
 	case UnitTypeDuration:
 		// 1024h60m59.09s
-		values[0] = Duration{time.Duration(int64(b.Current()))}.String()
-		values[1] = Duration{time.Duration(int64(b.Total))}.String()
+		values[0] = helper.Duration{time.Duration(int64(b.Current()))}.String()
+		values[1] = helper.Duration{time.Duration(int64(b.Total))}.String()
 		break
 	default:
 		return ""
@@ -114,7 +128,7 @@ func AddProgressBar(total int64) *ProgressBar {
 		barTotal = TotalPlaceholder
 	}
 
-	bar := uiprogress.AddBar(int(barTotal))
+	bar := defaultManager.AddBar(int(barTotal))
 	pbar := &ProgressBar{
 		Bar:       bar,
 		totalSet:  total != -1,

@@ -1,6 +1,7 @@
 package models
 
 import (
+	"bililive-downloader/helper"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -12,11 +13,11 @@ import (
 // RecordPart represents a part of the whole livestream recording.
 // It's typically H.264 media stream encapsulated in a single FLV container.
 type RecordPart struct {
-	Url         string   `json:"url"`
-	Size        Size     `json:"size"`
-	Length      Duration `json:"length"`
-	BackupUrl   *string  `json:"backup_url,omitempty"`
-	PreviewInfo *string  `json:"preview_info,omitempty"`
+	Url         string          `json:"url"`
+	Size        helper.Size     `json:"size"`
+	Length      helper.Duration `json:"length"`
+	BackupUrl   *string         `json:"backup_url,omitempty"`
+	PreviewInfo *string         `json:"preview_info,omitempty"`
 	filename    string
 }
 
@@ -42,11 +43,11 @@ type Quality struct {
 
 // RecordParts represents minimal media info about parts of a complete recording.
 type RecordParts struct {
-	List                 []RecordPart `json:"list"`
-	Size                 Size         `json:"size"`
-	Length               Duration     `json:"length"`
-	CurrentQualityNumber uint64       `json:"current_qn"`
-	Qualities            []Quality    `json:"qn_desc"`
+	List                 []RecordPart    `json:"list"`
+	Size                 helper.Size     `json:"size"`
+	Length               helper.Duration `json:"length"`
+	CurrentQualityNumber uint64          `json:"current_qn"`
+	Qualities            []Quality       `json:"qn_desc"`
 }
 
 func (ri *RecordParts) Quality() string {
@@ -67,12 +68,12 @@ type ApiResponse struct {
 }
 
 type LiveRecordInfo struct {
-	ID     string   `json:"rid"`
-	RoomID int64    `json:"room_id"`
-	UserID int64    `json:"uid"`
-	Title  string   `json:"title"`
-	Start  JSONTime `json:"start_timestamp"`
-	End    JSONTime `json:"end_timestamp"`
+	ID     string          `json:"rid"`
+	RoomID int64           `json:"room_id"`
+	UserID int64           `json:"uid"`
+	Title  string          `json:"title"`
+	Start  helper.JSONTime `json:"start_timestamp"`
+	End    helper.JSONTime `json:"end_timestamp"`
 }
 
 type LiveRecord struct {

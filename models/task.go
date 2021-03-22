@@ -1,6 +1,7 @@
 package models
 
 import (
+	"bililive-downloader/progressbar"
 	"fmt"
 	"github.com/gosuri/uiprogress"
 )
@@ -36,11 +37,11 @@ type PartTask struct {
 	filename          string
 }
 
-func (t *PartTask) AddProgressBar(total int64) *ProgressBar {
-	bar := AddProgressBar(total)
+func (t *PartTask) AddProgressBar(total int64) *progressbar.ProgressBar {
+	bar := progressbar.AddProgressBar(total)
 	bar.SetPrefixDecorator(func(b *uiprogress.Bar) string {
 		return fmt.Sprintf("%s\t%s\t%s\t", t.DecorPartName(), t.DecorStepName(), t.DecorFileName())
 	})
-	bar.SetUnitType(UnitTypeByteSize)
+	bar.SetUnitType(progressbar.UnitTypeByteSize)
 	return bar
 }
