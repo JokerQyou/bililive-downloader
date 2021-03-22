@@ -86,7 +86,7 @@ WaitTillDecapped:
 	task.SetFileName(filepath.Base(decappedTsFilePath))
 	bar.SetUnitType(progressbar.UnitTypeDuration)
 	runner, _ := ffmpeg.NewRunner("-i", rawFilePath, "-c", "copy", "-bsf:v", "h264_mp4toannexb", "-f", "mpegts", decappedTsFilePath)
-	runner.ProbeMediaDuration([]string{rawFilePath})
+	runner.ProbeMediaDuration(rawFilePath)
 	runner.SetTimeout(time.Minute * 15)
 	var decapProgTotalSet bool
 	err = runner.Run(func(current, total int64) {
@@ -204,7 +204,7 @@ func concatRecordParts(inputFiles map[int]string, output string) error {
 		"-movflags", "faststart",
 		output,
 	)
-	runner.ProbeMediaDuration(concatList)
+	runner.ProbeMediaDuration(concatList...)
 	runner.SetTimeout(time.Minute * 20)
 	var progTotalSet bool
 	return runner.Run(func(current, total int64) {
