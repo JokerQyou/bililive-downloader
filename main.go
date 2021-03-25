@@ -6,255 +6,157 @@ import (
 	"bililive-downloader/models"
 	"bililive-downloader/progressbar"
 	"bufio"
+	"errors"
 	"fmt"
-	"github.com/cavaliercoder/grab"
-	"github.com/gosuri/uiprogress"
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
+	"github.com/urfave/cli/v2"
 	"io/ioutil"
-	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
-	"time"
 )
 
-const UaKey = "User-Agent"
-const UserAgent = "Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/55.0.2883.87 Safari/537.36"
+const timeFormat = "2006-01-02 15:04:05"
+const defaultConcurrency = 2
 
-// downloadSinglePart downloads given part (as encoded in `task`) into given directory.
-// Downloaded file will also be de-capped to MPEGTS media, the intermediate FLV file will be deleted.
-func downloadSinglePart(task *models.PartTask) (filePath string, err error) {
-	recordPart := task.Part
+var logger zerolog.Logger
 
-	rawFilePath := filepath.Join(task.DownloadDirectory, recordPart.FileName())
-	decappedTsFilePath := fmt.Sprintf("%s.ts", strings.Split(rawFilePath, ".")[0])
+type DownloadParam struct {
+	RecordID     string                 // Record ID
+	Info         *models.LiveRecordInfo // Record info
+	Parts        *models.RecordParts    // Video parts
+	Liver        *models.LiverInfo      // Livestreamer info
+	DownloadList *models.IntSelection   // selected part numbers
+	Concurrency  uint
+}
 
-	bar := task.AddProgressBar(-1)
-
-	// Already processed (probably selectively downloaded this part before), use existing MPEGTS media as result, no need to re-download.
-	if info, err := os.Stat(decappedTsFilePath); err == nil && info.Mode().IsRegular() {
-		task.SetCurrentStep("已存在")
-		task.SetFileName(filepath.Base(decappedTsFilePath))
-		bar.SetTotal(info.Size())
-		bar.SetCurrent(info.Size())
-		return decappedTsFilePath, nil
-	}
-
-	var client *grab.Client
-	var dlReq *grab.Request
-	var resp *grab.Response
-	var ticker *time.Ticker
-
-	// Already downloaded, directly proceed to de-cap, skip downloading.
-	if info, err := os.Stat(rawFilePath); err == nil && info.Size() == int64(recordPart.Size.Bytes()) {
-		task.SetCurrentStep("已下载")
-		bar.SetTotal(info.Size())
-		bar.SetCurrent(info.Size())
-		goto WaitTillDecapped
-	}
-
-	bar.SetTotal(int64(task.Part.Size.Bytes()))
-	task.SetCurrentStep("下载中")
-	client = grab.NewClient()
-	client.UserAgent = UserAgent
-	dlReq, err = grab.NewRequest(rawFilePath, recordPart.Url)
-	if err != nil {
-		return
-	}
-
-	resp = client.Do(dlReq)
-	ticker = time.NewTicker(time.Millisecond * 120)
-	defer ticker.Stop()
-
-WaitTillDownloaded:
-	for {
-		select {
-		case <-ticker.C:
-			bar.SetCurrent(resp.BytesComplete())
-		case <-resp.Done:
-			bar.SetCurrent(resp.BytesComplete())
-			break WaitTillDownloaded
+func handleDownloadAction(c *cli.Context) error {
+	var param DownloadParam
+	if c.Bool("interactive") {
+		// Ask user for parameters
+		var err error
+		if param, err = askForArguments(); err != nil {
+			return err
 		}
-	}
-
-WaitTillDecapped:
-	// De-cap from FLV to MPEG TS media
-	// TODO Are we confident enough that all bilibili livestream records will be H.264 streams encapsulated in FLV containers?
-	task.SetCurrentStep("解包")
-	task.SetFileName(filepath.Base(decappedTsFilePath))
-	bar.SetUnitType(progressbar.UnitTypeDuration)
-	runner, _ := ffmpeg.NewRunner("-i", rawFilePath, "-c", "copy", "-bsf:v", "h264_mp4toannexb", "-f", "mpegts", decappedTsFilePath)
-	runner.ProbeMediaDuration(rawFilePath)
-	runner.SetTimeout(time.Minute * 15)
-	var decapProgTotalSet bool
-	err = runner.Run(func(current, total int64) {
-		if !decapProgTotalSet {
-			bar.SetTotal(total)
-			decapProgTotalSet = true
-		}
-		bar.SetCurrent(current)
-	})
-
-	// 解包后对TS媒体进行检查，如果长度相差过大则认为解包失败，保留FLV文件以供后续人工检视
-	durationMatch := func(tsDuration time.Duration) bool {
-		return math.Abs(float64(task.Part.Length.Duration-tsDuration)) < float64(time.Second*3)
-	}
-	if err == nil {
-		task.SetCurrentStep("检查中")
-		if tsDuration, err := runner.ProbSingleMediaDuration(decappedTsFilePath); err == nil && durationMatch(tsDuration) {
-			os.Remove(rawFilePath)
-			task.SetCurrentStep("完成")
+	} else {
+		// Extract parameters from cli context
+		if recordID, err := extractRecordID(c.String("record")); err != nil {
+			return cli.Exit(err.Error(), 1)
 		} else {
-			task.SetCurrentStep(fmt.Sprintf("出错: 解包后媒体长度相差%s", task.Part.Length.Duration-tsDuration))
+			param.RecordID = recordID
+			logger.Info().Str("ID", param.RecordID).Msg("直播回放ID确认")
 		}
-	} else {
-		task.SetCurrentStep(fmt.Sprintf("出错: %v", err))
-	}
 
-	return decappedTsFilePath, err
-}
-
-// downloadRecordParts download selected parts (`downloadList`) of given livestream record into `where`.
-// It also manages the progress bar and concurrency of downloading (`concurrency`).
-func downloadRecordParts(recordInfo *models.RecordParts, downloadList models.IntSelection, where string, concurrency int) (filePaths map[int]string, err error) {
-	taskQueue := make(chan *models.PartTask)
-
-	filePaths = make(map[int]string)
-	var filePathUpdater sync.Mutex
-
-	var wg sync.WaitGroup
-
-	if concurrency > len(downloadList) {
-		concurrency = len(downloadList)
-		fmt.Printf("已自动调整下载并发数为 %d\n", concurrency)
-	} else {
-		fmt.Printf("下载并发数 %d\n", concurrency)
-	}
-	for i := 0; i < concurrency; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-
-			for task := range taskQueue {
-				downloadTask := task
-				time.Sleep(time.Millisecond * 20 * time.Duration(downloadTask.PartNumber))
-
-				func() {
-					downloadedFilePath, err := downloadSinglePart(downloadTask)
-					if err != nil {
-						downloadTask.SetCurrentStep(fmt.Sprintf("出错: %v", err))
-					} else {
-						filePathUpdater.Lock()
-						defer filePathUpdater.Unlock()
-						filePaths[downloadTask.PartNumber] = downloadedFilePath
-					}
-				}()
+		// FIXME
+		if selected := strings.ToLower(c.String("select")); selected == "" {
+			logger.Error().Msg("没有指定要下载的分段")
+			return cli.Exit("没有指定要下载的分段", 1)
+		} else {
+			selection, err := models.ParseStringFromString(selected)
+			if err != nil {
+				logger.Error().Err(err).Str("输入的选择", selected).Msg("无法解析输入的选择")
+				return cli.Exit("无法解析输入的选择", 1)
 			}
-		}()
-	}
-
-	// Generate and insert tasks.
-	for i, part := range recordInfo.List {
-		recordPart := part
-		index := i
-		if !downloadList.Contains(index + 1) {
-			continue
+			if selection.Count() == 0 {
+				logger.Error().Str("输入的选择", selected).Msg("没有选择要下载的分段")
+				return cli.Exit("没有选择要下载的分段", 1)
+			}
+			param.DownloadList = selection
+			logger.Info().Stringer("选择的分段", param.DownloadList).Send()
 		}
 
-		task := &models.PartTask{
-			PartNumber:        index + 1,
-			Part:              &recordPart,
-			DownloadDirectory: where,
+		if concurrency := c.Uint("concurrency"); concurrency == 0 {
+			param.Concurrency = defaultConcurrency
+			logger.Info().Uint("并发数", param.Concurrency).Msg("使用默认下载并发数")
+		} else {
+			param.Concurrency = concurrency
+			logger.Info().Uint("并发数", param.Concurrency).Msg("指定了下载并发数")
 		}
-		task.SetCurrentStep("等待下载")
-		task.SetFileName(recordPart.FileName())
-		taskQueue <- task
-	}
 
-	close(taskQueue)
-	wg.Wait()
-
-	return
-}
-
-// concatRecordParts concatenates multiple record parts into a single MP4 file.
-func concatRecordParts(inputFiles map[int]string, output string) error {
-	if info, err := os.Stat(output); err == nil && info.Mode().IsRegular() {
-		return fmt.Errorf("文件 %s 已经存在", output)
-	}
-
-	bar := progressbar.AddProgressBar(-1)
-	bar.SetPrefixDecorator(func(b *uiprogress.Bar) string {
-		return fmt.Sprintf("合并%d个视频\t%s\t", len(inputFiles), filepath.Base(output))
-	})
-	bar.SetUnitType(progressbar.UnitTypeDuration)
-
-	// Concat TS containers (with H.264 media) together into a single MP4 container.
-	concatList := make([]string, len(inputFiles))
-	for i, filePath := range inputFiles {
-		concatList[i-1] = filePath
-	}
-
-	runner, _ := ffmpeg.NewRunner(
-		"-i", fmt.Sprintf("concat:%s", strings.Join(concatList, "|")),
-		"-c", "copy",
-		"-bsf:a", "aac_adtstoasc",
-		"-movflags", "faststart",
-		output,
-	)
-	runner.ProbeMediaDuration(concatList...)
-	runner.SetTimeout(time.Minute * 20)
-	var progTotalSet bool
-	return runner.Run(func(current, total int64) {
-		if !progTotalSet {
-			bar.SetTotal(total)
-			progTotalSet = true
+		if recordInfo, err := fetchRecordInfo(param.RecordID); err != nil {
+			logger.Error().Err(err).Msg("加载回放信息出错")
+			return cli.Exit("加载回放信息出错", 1)
+		} else {
+			param.Info = recordInfo
 		}
-		bar.SetCurrent(current)
-	})
-}
 
-func main() {
-	criticalErr := func(e error, logLine string) {
-		if e != nil {
-			fmt.Printf("%s 出错: %v\n", logLine, e)
-			os.Exit(1)
+		if liverInfo, err := fetchLiverInfo(param.Info.RoomID); err != nil {
+			logger.Error().Err(err).Msg("加载直播间信息出错")
+			return cli.Exit("加载直播间信息出错", 1)
+		} else {
+			param.Liver = liverInfo
 		}
-	}
 
-	// Setup ffmpeg tools
-	ffmpegBin, err := exec.LookPath("ffmpeg")
-	criticalErr(err, "没有找到 ffmpeg 工具")
-	ffprobeBin, err := exec.LookPath("ffprobe")
-	criticalErr(err, "没有找到 ffprobe 工具")
-	ffmpeg.Init(ffmpegBin, ffprobeBin)
+		if parts, err := fetchRecordParts(param.RecordID); err != nil {
+			logger.Error().Err(err).Msg("加载回放分段信息出错")
+			return cli.Exit("加载回放分段信息出错", 1)
+		} else {
+			param.Parts = parts
+		}
+
+		logger.Debug().Interface("param", param).Send()
+	}
 
 	// Setup progress bar manager only if we're connected to a TTY
-	if info, _ := os.Stdout.Stat(); info.Mode()&os.ModeCharDevice != 0 {
-		// TODO logging
+	if isTTY() {
 		progressbar.Init(os.Stdout)
+		logger.Debug().Msg("将显示进度条")
 	} else {
-		// TODO progress disabled, logging
+		// progress disabled
 		progressbar.Init(ioutil.Discard)
+		logger.Debug().Msg("不在终端中运行，将不显示进度条")
 	}
 
-	fmt.Print("请输入您要下载的B站直播回放链接地址: ")
-	line, _, err := bufio.NewReader(os.Stdin).ReadLine()
-	criticalErr(err, "读取用户输入")
+	return download(param)
+}
 
-	recordId := strings.TrimSpace(strings.Split(string(line), "?")[0])
+func extractRecordID(link string) (string, error) {
+	recordId := strings.TrimSpace(strings.Split(string(link), "?")[0])
 	rIds := strings.Split(recordId, "/")
 	recordId = rIds[len(rIds)-1]
+	if recordId == "" {
+		return "", errors.New("没有指定直播回放ID")
+	}
+
+	return recordId, nil
+}
+
+func askForArguments() (DownloadParam, error) {
+	var param DownloadParam
+	var err error
+
+	fmt.Print("请输入您要下载的B站直播回放链接地址: ")
+	var line []byte
+	if line, _, err = bufio.NewReader(os.Stdin).ReadLine(); err != nil {
+		logger.Error().Err(err).Msg("无法读取用户输入")
+		return param, err
+	}
+	recordId, err := extractRecordID(string(line))
+	if err != nil {
+		return param, err
+	}
 	fmt.Printf("直播回放ID是 %s\n", recordId)
 
 	videoInfo, err := fetchRecordInfo(recordId)
-	criticalErr(err, "加载直播回放信息")
+	if err != nil {
+		logger.Error().Err(err).Msg("查询直播回放信息出错")
+		return param, err
+	}
+
 	liverInfo, err := fetchLiverInfo(videoInfo.RoomID)
-	criticalErr(err, "加载主播信息")
+	if err != nil {
+		logger.Error().Err(err).Msg("查询主播信息出错")
+		return param, err
+	}
+
 	recordInfo, err := fetchRecordParts(recordId)
-	criticalErr(err, "加载视频分段信息")
+	if err != nil {
+		logger.Error().Err(err).Msg("查询直播回放分片出错")
+		return param, err
+	}
 
 	fmt.Printf(
 		"%s(UID:%d)《%s》直播时间%s ~ %s，时长%v，画质：%s，总大小%s（共%d部分）\n",
@@ -267,93 +169,183 @@ func main() {
 	)
 	partStart := videoInfo.Start
 	for i, v := range recordInfo.List {
-		partEnd := helper.JSONTime{partStart.Add(v.Length.Duration)}
+		partEnd := helper.JSONTime{Time: partStart.Add(v.Length.Duration)}
 		fmt.Printf("%d\t%s\t长度%s\t大小%s\t%s ~ %s\n", i+1, v.FileName(), v.Length, v.Size, partStart, partEnd)
 		partStart = partEnd
 	}
 
-	// Mkdir
-	cwd, err := os.Getwd()
-	criticalErr(err, "检测当前目录")
-
 	// Ask user what to do
-	downloadList, err := models.SelectFromList(len(recordInfo.List), "要下载哪些分段？请输入分段的序号，用英文逗号分隔（输入0来下载所有分段并合并成单个视频）: ")
-	criticalErr(err, "读取用户选择")
+	fmt.Print("要下载哪些分段？请输入分段的序号，用英文逗号分隔（输入all来下载所有分段并合并成单个视频）: ")
+	input, _, err := bufio.NewReader(os.Stdin).ReadLine()
+	if err != nil {
+		logger.Error().Err(err).Msg("读取用户选择出错")
+		return param, err
+	}
+	downloadList, err := models.ParseStringFromString(string(input))
 	fmt.Printf("将下载这些分段: %s\n", downloadList)
 
 	// Ask user about concurrency
-	concurrency := 2
+	var concurrency uint = 2
 	fmt.Print("下载并发数（可同时进行多少个分段的下载。默认为2，如果您的网络较好，可适当增加）: ")
 	line, _, err = bufio.NewReader(os.Stdin).ReadLine()
-	con32, parseErr := strconv.ParseInt(strings.TrimSpace(string(line)), 10, 32)
-	if err != nil || parseErr != nil {
-		fmt.Printf("解析错误，使用默认下载并发数: %d\n", concurrency)
+	if err != nil {
+		concurrency = 2
+		logger.Error().Err(err).Uint("下载并发数", concurrency).Msg("读取用户输入出错，回退到默认下载并发数")
 	} else {
-		concurrency = int(con32)
-		fmt.Printf("指定了下载并发数: %d\n", concurrency)
+		con32, parseErr := strconv.ParseUint(strings.TrimSpace(string(line)), 10, 32)
+		if parseErr != nil {
+			concurrency = 2
+			logger.Info().Err(parseErr).Uint("下载并发数", concurrency).Msg("解析错误，回退到默认下载并发数")
+		} else {
+			concurrency = uint(con32)
+			logger.Info().Uint("下载并发数", concurrency).Msg("用户指定了下载并发数")
+		}
+	}
+
+	param = DownloadParam{
+		RecordID:     recordId,
+		Info:         videoInfo,
+		Parts:        recordInfo,
+		Liver:        liverInfo,
+		DownloadList: downloadList,
+		Concurrency:  concurrency,
+	}
+	return param, nil
+}
+
+func download(p DownloadParam) error {
+	// Mkdir
+	cwd, err := os.Getwd()
+	if err != nil {
+		logger.Fatal().Err(err).Msg("检测当前目录出错")
 	}
 
 	recordDownloadDir := filepath.Join(
 		cwd,
-		fmt.Sprintf("%d-%s", liverInfo.UserID, liverInfo.UserName),
-		fmt.Sprintf("%s-%s-%s", strings.ReplaceAll(videoInfo.Start.String(), ":", "-"), videoInfo.Title, recordId),
+		fmt.Sprintf("%d-%s", p.Liver.UserID, p.Liver.UserName),
+		fmt.Sprintf("%s-%s-%s", strings.ReplaceAll(p.Info.Start.String(), ":", "-"), p.Info.Title, p.RecordID),
 	)
-	criticalErr(os.MkdirAll(recordDownloadDir, 0755), "建立下载目录")
-	fmt.Printf("下载目录: \"%s\"\n", recordDownloadDir)
+	if err := os.MkdirAll(recordDownloadDir, 0755); err != nil {
+		logger.Fatal().Err(err).Str("下载目录", recordDownloadDir).Msg("建立下载目录出错")
+	}
+	logger.Info().Str("下载目录", recordDownloadDir).Msg("下载目录确认完成")
 
 	{
 		infoFile := filepath.Join(recordDownloadDir, "直播信息.txt")
 		info := strings.Builder{}
-		info.WriteString(fmt.Sprintf("直播间ID：%d\n", videoInfo.RoomID))
-		info.WriteString(fmt.Sprintf("主播UID：%d，用户名：%s\n", liverInfo.UserID, liverInfo.UserName))
-		info.WriteString(fmt.Sprintf("直播标题：%s\n", videoInfo.Title))
-		info.WriteString(fmt.Sprintf("开始于：%s\n", videoInfo.Start))
-		info.WriteString(fmt.Sprintf("结束于：%s\n", videoInfo.End))
-		info.WriteString(fmt.Sprintf("共%d部分\n", len(recordInfo.List)))
-		info.WriteString(fmt.Sprintf("选择下载的分段：%s\n", downloadList))
-		criticalErr(ioutil.WriteFile(infoFile, []byte(info.String()), 0755), "写入直播回放信息")
+		info.WriteString(fmt.Sprintf("直播间ID：%d\n", p.Info.RoomID))
+		info.WriteString(fmt.Sprintf("主播UID：%d，用户名：%s\n", p.Liver.UserID, p.Liver.UserName))
+		info.WriteString(fmt.Sprintf("直播标题：%s\n", p.Info.Title))
+		info.WriteString(fmt.Sprintf("开始于：%s\n", p.Info.Start))
+		info.WriteString(fmt.Sprintf("结束于：%s\n", p.Info.End))
+		info.WriteString(fmt.Sprintf("共%d部分\n", len(p.Parts.List)))
+		info.WriteString(fmt.Sprintf("选择下载的分段：%s\n", p.DownloadList))
+		if err := ioutil.WriteFile(infoFile, []byte(info.String()), 0755); err != nil {
+			logger.Error().Err(err).Str("直播信息文件", infoFile).Msg("写入直播回放信息出错")
+		}
 	}
 
-	uiprogress.Start()
+	progressbar.Start()
 
-	decappedFiles, err := downloadRecordParts(recordInfo, downloadList, recordDownloadDir, concurrency)
-	criticalErr(err, "下载直播回放分段")
+	decappedFiles, err := downloadRecordParts(p.Parts, p.DownloadList, recordDownloadDir, p.Concurrency)
+	if err != nil {
+		logger.Fatal().Err(err).Msg("下载直播回放出错")
+	}
 
 	// All parts downloaded, concat into a single file.
-	if len(downloadList) == len(recordInfo.List) && len(decappedFiles) == len(recordInfo.List) {
-		fmt.Println("所有回放分段都已下载，合并为单个视频")
+	if p.DownloadList.IsFull() && len(decappedFiles) == len(p.Parts.List) {
+		logger.Info().Interface("下载的分段", p.DownloadList).Msg("合并为单个视频")
 		output := filepath.Join(
 			recordDownloadDir,
 			fmt.Sprintf(
 				"%s-%s-%s-%s-complete.mp4",
-				strings.ReplaceAll(videoInfo.Start.String(), ":", "-"),
-				recordId,
-				videoInfo.Title,
-				recordInfo.Quality(),
+				strings.ReplaceAll(p.Info.Start.String(), ":", "-"),
+				p.RecordID,
+				p.Info.Title,
+				p.Parts.Quality(),
 			),
 		)
-		criticalErr(concatRecordParts(decappedFiles, output), "合并视频分段")
-		uiprogress.Stop()
+		if err := concatRecordParts(decappedFiles, output); err != nil {
+			logger.Fatal().Err(err).Interface("下载的分段", p.DownloadList).Str("合并后的文件", output).Msg("合并视频分段出错")
+		}
+		progressbar.Stop()
 
-		for _, i := range downloadList {
+		for _, i := range p.DownloadList.AsIntSlice() {
 			if filePath, ok := decappedFiles[i]; ok && filePath != "" {
-				fmt.Printf("删除文件%s\n", filePath)
+				logger.Info().Str("文件", filePath).Msg("删除中间文件")
 				os.Remove(filePath)
 			}
 		}
 
-		fmt.Printf("完整回放下载完毕: %s\n", output)
-		return
+		logger.Info().Str("合并后的文件", output).Msg("完整回放下载完毕")
+		return nil
 	} else {
-		uiprogress.Stop()
+		progressbar.Stop()
 	}
 
-	fmt.Println("下载结果:")
-	for _, i := range downloadList {
+	for _, i := range p.DownloadList.AsIntSlice() {
 		if filePath, ok := decappedFiles[i]; ok {
-			fmt.Printf("第%d部分: 下载完成 %s\n", i, filePath)
+			logger.Info().Str("文件", filePath).Msgf("第%d部分下载完成", i)
 		} else {
-			fmt.Printf("第%d部分: 未下载成功\n", i)
+			logger.Warn().Msgf("第%d部分下载不成功", i)
 		}
 	}
+
+	return nil
+}
+
+func isTTY() bool {
+	info, _ := os.Stdout.Stat()
+	return info.Mode()&os.ModeCharDevice != 0
+}
+
+func handleVersionCommand(c *cli.Context) error {
+	return errors.New("DEBUG!")
+}
+
+func main() {
+	logger = log.Output(zerolog.ConsoleWriter{
+		NoColor:    !isTTY(),
+		Out:        os.Stdout,
+		TimeFormat: timeFormat,
+	})
+
+	// Setup ffmpeg tools
+	ffmpegBin, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		logger.Fatal().Err(err).Msg("没有找到ffmpeg工具")
+	}
+	ffprobeBin, err := exec.LookPath("ffprobe")
+	if err != nil {
+		logger.Fatal().Err(err).Msg("没有找到ffprobe工具")
+	}
+	ffmpeg.Init(ffmpegBin, ffprobeBin)
+
+	defaultSelection, _ := models.ParseStringFromString("all")
+
+	app := &cli.App{
+		Name:  "bililive-downloader",
+		Usage: "Download livestream recordings from Bilibili",
+		Flags: []cli.Flag{},
+		Commands: []*cli.Command{
+			{
+				Name:    "version",
+				Aliases: []string{"v"},
+				Usage:   "显示版本信息",
+				Action:  handleVersionCommand,
+			},
+			{
+				Name:   "download",
+				Usage:  "下载直播回放",
+				Action: handleDownloadAction,
+				Flags: []cli.Flag{
+					&cli.BoolFlag{Name: "interactive", Aliases: []string{"i"}, Usage: "交互式询问各个参数。指定此选项时，其他参数都被忽略。", Value: false},
+					&cli.UintFlag{Name: "concurrency", Usage: "设定下载的`并发数`。如果您的网络较好，可适当调高。", Value: defaultConcurrency},
+					&cli.StringFlag{Name: "select", Usage: "指定要下载的`分段编号`，以逗号分隔。all表示指定所有分段。如果指定所有分段，则下载完成后会合并为单个文件。", Value: defaultSelection.String()},
+					&cli.StringFlag{Name: "record", Usage: "直播回放的`链接或ID`。"},
+				},
+			},
+		},
+	}
+	app.Run(os.Args)
 }

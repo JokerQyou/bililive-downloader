@@ -33,6 +33,18 @@ func Init(output io.Writer) {
 	})
 }
 
+func Start() {
+	if defaultManager != nil {
+		defaultManager.Start()
+	}
+}
+
+func Stop() {
+	if defaultManager != nil {
+		defaultManager.Stop()
+	}
+}
+
 // ProgressBar simplifies long-time operation on file(s).
 // It wraps a uiprogress.Bar instance and allow dynamically changing prefix decoration and value unit as you wish.
 // A user can call `.SetPrependDecorator(*uiprogress.Bar) string` to render some text before the internal decorators.
