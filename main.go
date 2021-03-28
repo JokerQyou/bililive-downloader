@@ -18,7 +18,7 @@ func main() {
 		NoColor:    !helper.IsTTY(),
 		Out:        os.Stdout,
 		TimeFormat: timeFormat,
-	})
+	}).Level(zerolog.InfoLevel)
 
 	// Setup ffmpeg tools
 	ffmpegBin, err := exec.LookPath("ffmpeg")
