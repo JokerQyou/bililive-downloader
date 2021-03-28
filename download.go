@@ -2,6 +2,7 @@ package main
 
 import (
 	"bililive-downloader/ffmpeg"
+	"bililive-downloader/helper"
 	"bililive-downloader/models"
 	"bililive-downloader/progressbar"
 	"fmt"
@@ -114,7 +115,7 @@ WaitTillDecapped:
 
 // downloadRecordParts download selected parts (`downloadList`) of given livestream record into `where`.
 // It also manages the progress bar and concurrency of downloading (`concurrency`).
-func downloadRecordParts(recordInfo *models.RecordParts, downloadList *models.IntSelection, where string, concurrency uint) (filePaths map[int]string, err error) {
+func downloadRecordParts(recordInfo *models.RecordParts, downloadList []int, where string, concurrency uint) (filePaths map[int]string, err error) {
 	taskQueue := make(chan *models.PartTask)
 
 	filePaths = make(map[int]string)
@@ -122,9 +123,9 @@ func downloadRecordParts(recordInfo *models.RecordParts, downloadList *models.In
 
 	var wg sync.WaitGroup
 
-	if int(concurrency) > downloadList.Count() {
-		concurrency = uint(downloadList.Count())
-		fmt.Printf("已自动调整下载并发数为 %d\n", concurrency)
+	// FIXME loggins
+	if int(concurrency) > len(downloadList) {
+		concurrency = uint(len(downloadList))
 	} else {
 		fmt.Printf("下载并发数 %d\n", concurrency)
 	}
@@ -155,7 +156,7 @@ func downloadRecordParts(recordInfo *models.RecordParts, downloadList *models.In
 	for i, part := range recordInfo.List {
 		recordPart := part
 		index := i
-		if !downloadList.Contains(index + 1) {
+		if !helper.ContainsInt(downloadList, index) {
 			continue
 		}
 
@@ -217,7 +218,7 @@ type DownloadParam struct {
 	Info         *models.LiveRecordInfo // Record info
 	Parts        *models.RecordParts    // Video parts
 	Liver        *models.LiverInfo      // Livestreamer info
-	DownloadList *models.IntSelection   // selected part numbers
+	DownloadList []int                  // selected part numbers
 	Concurrency  uint
 }
 
@@ -261,8 +262,8 @@ func download(p DownloadParam) error {
 	}
 
 	// All parts downloaded, concat into a single file.
-	if p.DownloadList.IsFull() && len(decappedFiles) == len(p.Parts.List) {
-		logger.Info().Interface("下载的分段", p.DownloadList).Msg("合并为单个视频")
+	if len(p.DownloadList) == len(p.Parts.List) && len(decappedFiles) == len(p.Parts.List) {
+		logger.Info().Ints("下载的分段", p.DownloadList).Msg("合并为单个视频")
 		output := filepath.Join(
 			recordDownloadDir,
 			fmt.Sprintf(
@@ -274,15 +275,13 @@ func download(p DownloadParam) error {
 			),
 		)
 		if err := concatRecordParts(decappedFiles, output); err != nil {
-			logger.Fatal().Err(err).Interface("下载的分段", p.DownloadList).Str("合并后的文件", output).Msg("合并视频分段出错")
+			logger.Fatal().Err(err).Ints("下载的分段", p.DownloadList).Str("合并后的文件", output).Msg("合并视频分段出错")
 		}
 		progressbar.Stop()
 
-		for _, i := range p.DownloadList.AsIntSlice() {
-			if filePath, ok := decappedFiles[i]; ok && filePath != "" {
-				logger.Info().Str("文件", filePath).Msg("删除中间文件")
-				os.Remove(filePath)
-			}
+		for _, filePath := range decappedFiles {
+			err = os.Remove(filePath)
+			logger.Debug().Err(err).Str("文件", filePath).Msg("删除中间文件")
 		}
 
 		logger.Info().Str("合并后的文件", output).Msg("完整回放下载完毕")
@@ -291,7 +290,7 @@ func download(p DownloadParam) error {
 		progressbar.Stop()
 	}
 
-	for _, i := range p.DownloadList.AsIntSlice() {
+	for _, i := range p.DownloadList {
 		if filePath, ok := decappedFiles[i]; ok {
 			logger.Info().Str("文件", filePath).Msgf("第%d部分下载完成", i)
 		} else {

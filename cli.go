@@ -2,7 +2,6 @@ package main
 
 import (
 	"bililive-downloader/helper"
-	"bililive-downloader/models"
 	"bililive-downloader/progressbar"
 	"bufio"
 	"errors"
@@ -65,7 +64,7 @@ func handleDownloadAction(c *cli.Context) error {
 		return cli.Exit(err.Error(), returnCodeError)
 	} else {
 		param.RecordID = recordID
-		logger.Info().Str("ID", param.RecordID).Msg("直播回放ID确认")
+		logger.Info().Str("直播回放ID", param.RecordID).Send()
 	}
 
 	// Ask user about concurrency
@@ -151,17 +150,29 @@ func handleDownloadAction(c *cli.Context) error {
 			selected = "all"
 		}
 
-		selection, err := models.ParseStringFromString(selected)
-		if err != nil {
-			logger.Error().Err(err).Str("输入的选择", selected).Msg("无法解析输入的选择")
-			return cli.Exit("无法解析输入的选择", returnCodeError)
+		selection := make([]int, 0)
+		if selected == "all" {
+			for i, _ := range param.Parts.List {
+				selection = append(selection, i+1)
+			}
+		} else {
+			for _, v := range strings.Split(selected, ",") {
+				n := strings.TrimSpace(v)
+				number, err := strconv.ParseInt(n, 10, 32)
+				if err != nil {
+					continue
+				}
+
+				selection = append(selection, int(number))
+			}
 		}
-		if selection.Count() == 0 {
+
+		if len(selection) == 0 {
 			logger.Error().Str("输入的选择", selected).Msg("没有选择要下载的分段")
 			return cli.Exit("没有选择要下载的分段", returnCodeError)
 		}
 		param.DownloadList = selection
-		logger.Info().Stringer("选择的分段", param.DownloadList).Send()
+		logger.Info().Ints("选择的分段", param.DownloadList).Send()
 	}
 
 	logger.Debug().Interface("param", param).Send()
@@ -209,9 +220,10 @@ func newCliApp() *cli.App {
 				Action:  handleVersionCommand,
 			},
 			{
-				Name:   "download",
-				Usage:  "下载直播回放",
-				Action: handleDownloadAction,
+				Name:    "download",
+				Aliases: []string{"d"},
+				Usage:   "下载直播回放",
+				Action:  handleDownloadAction,
 				Flags: []cli.Flag{
 					&cli.BoolFlag{Name: "interactive", Aliases: []string{"i"}, Usage: "交互式询问各个未传递的参数。", Value: false},
 					&cli.UintFlag{Name: "concurrency", Usage: "设定下载的`并发数`。如果您的网络较好，可适当调高。"},
