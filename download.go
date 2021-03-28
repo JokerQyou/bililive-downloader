@@ -266,6 +266,8 @@ func cliDownload(p DownloadParam) error {
 			p.Parts.Quality(),
 		),
 	)
+
+	// Skip if the full recording is already downloaded.
 	if _, err := os.Stat(fullRecordFile); !os.IsNotExist(err) {
 		logger.Debug().Str("文件", filepath.Base(fullRecordFile)).Msg("完整直播回放文件已存在，检查媒体时长")
 		inspector, _ := ffmpeg.NewRunner("--help")
