@@ -2,6 +2,7 @@ package helper
 
 import (
 	"encoding/json"
+	"errors"
 	"github.com/c2h5oh/datasize"
 	"time"
 )
@@ -17,6 +18,9 @@ func (d *Duration) UnmarshalJSON(b []byte) error {
 		return err
 	}
 	// value is in `ms` (typical Javascript), but Duration type conversion wants `ns`.
+	if v < 0 {
+		return errors.New("duration less than 0")
+	}
 	d.Duration = time.Duration(v * 1_000_000)
 	return nil
 }
@@ -32,7 +36,7 @@ type Size struct {
 }
 
 func (s *Size) UnmarshalJSON(b []byte) error {
-	var v int64
+	var v uint64
 	if err := json.Unmarshal(b, &v); err != nil {
 		return err
 	}

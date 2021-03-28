@@ -8,5 +8,6 @@ require (
 	github.com/gosuri/uiprogress v0.0.2-0.20210317150916-484b9f69ea00
 	github.com/magefile/mage v1.11.0
 	github.com/rs/zerolog v1.20.0
+	github.com/stretchr/testify v1.7.0
 	github.com/urfave/cli/v2 v2.3.0
 )
