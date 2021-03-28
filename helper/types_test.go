@@ -14,11 +14,11 @@ func TestDuration_String(t *testing.T) {
 		fields fields
 		want   string
 	}{
-		{"123ms", fields{time.Millisecond * 123}, "120ms"},
-		{"1.23s", fields{time.Millisecond * 1230}, "1.23s"},
+		{"100ms", fields{time.Millisecond * 123}, "100ms"},
+		{"1.2s", fields{time.Millisecond * 1230}, "1.2s"},
 		{"12.3s", fields{time.Millisecond * 12300}, "12.3s"},
 		{"2m3s", fields{time.Millisecond * 123000}, "2m3s"},
-		{"2h3m4s", fields{time.Millisecond * 7384000}, "2h3m4s"},
+		{"2h3m4s", fields{time.Millisecond * 7384001}, "2h3m4s"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

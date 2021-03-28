@@ -184,7 +184,7 @@ func concatRecordParts(inputFiles map[int]string, output string) error {
 
 	bar := progressbar.AddProgressBar(-1)
 	bar.SetPrefixDecorator(func(b *uiprogress.Bar) string {
-		return fmt.Sprintf("合并%d个视频\t%s\t", len(inputFiles), filepath.Base(output))
+		return "合并"
 	})
 	bar.SetUnitType(progressbar.UnitTypeDuration)
 
