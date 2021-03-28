@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"github.com/cavaliercoder/grab"
 	"github.com/gosuri/uiprogress"
+	"io/ioutil"
 	"math"
 	"os"
 	"path/filepath"
@@ -209,4 +210,94 @@ func concatRecordParts(inputFiles map[int]string, output string) error {
 		}
 		bar.SetCurrent(current)
 	})
+}
+
+type DownloadParam struct {
+	RecordID     string                 // Record ID
+	Info         *models.LiveRecordInfo // Record info
+	Parts        *models.RecordParts    // Video parts
+	Liver        *models.LiverInfo      // Livestreamer info
+	DownloadList *models.IntSelection   // selected part numbers
+	Concurrency  uint
+}
+
+func download(p DownloadParam) error {
+	// Mkdir
+	cwd, err := os.Getwd()
+	if err != nil {
+		logger.Fatal().Err(err).Msg("检测当前目录出错")
+	}
+
+	recordDownloadDir := filepath.Join(
+		cwd,
+		fmt.Sprintf("%d-%s", p.Liver.UserID, p.Liver.UserName),
+		fmt.Sprintf("%s-%s-%s", strings.ReplaceAll(p.Info.Start.String(), ":", "-"), p.Info.Title, p.RecordID),
+	)
+	if err := os.MkdirAll(recordDownloadDir, 0755); err != nil {
+		logger.Fatal().Err(err).Str("下载目录", recordDownloadDir).Msg("建立下载目录出错")
+	}
+	logger.Info().Str("下载目录", recordDownloadDir).Send()
+
+	{
+		infoFile := filepath.Join(recordDownloadDir, "直播信息.txt")
+		info := strings.Builder{}
+		info.WriteString(fmt.Sprintf("直播间ID：%d\n", p.Info.RoomID))
+		info.WriteString(fmt.Sprintf("主播UID：%d，用户名：%s\n", p.Liver.UserID, p.Liver.UserName))
+		info.WriteString(fmt.Sprintf("直播标题：%s\n", p.Info.Title))
+		info.WriteString(fmt.Sprintf("开始于：%s\n", p.Info.Start))
+		info.WriteString(fmt.Sprintf("结束于：%s\n", p.Info.End))
+		info.WriteString(fmt.Sprintf("共%d部分\n", len(p.Parts.List)))
+		info.WriteString(fmt.Sprintf("选择下载的分段：%s\n", p.DownloadList))
+		if err := ioutil.WriteFile(infoFile, []byte(info.String()), 0755); err != nil {
+			logger.Error().Err(err).Str("直播信息文件", infoFile).Msg("写入直播回放信息出错")
+		}
+	}
+
+	progressbar.Start()
+
+	decappedFiles, err := downloadRecordParts(p.Parts, p.DownloadList, recordDownloadDir, p.Concurrency)
+	if err != nil {
+		logger.Fatal().Err(err).Msg("下载直播回放出错")
+	}
+
+	// All parts downloaded, concat into a single file.
+	if p.DownloadList.IsFull() && len(decappedFiles) == len(p.Parts.List) {
+		logger.Info().Interface("下载的分段", p.DownloadList).Msg("合并为单个视频")
+		output := filepath.Join(
+			recordDownloadDir,
+			fmt.Sprintf(
+				"%s-%s-%s-%s-complete.mp4",
+				strings.ReplaceAll(p.Info.Start.String(), ":", "-"),
+				p.RecordID,
+				p.Info.Title,
+				p.Parts.Quality(),
+			),
+		)
+		if err := concatRecordParts(decappedFiles, output); err != nil {
+			logger.Fatal().Err(err).Interface("下载的分段", p.DownloadList).Str("合并后的文件", output).Msg("合并视频分段出错")
+		}
+		progressbar.Stop()
+
+		for _, i := range p.DownloadList.AsIntSlice() {
+			if filePath, ok := decappedFiles[i]; ok && filePath != "" {
+				logger.Info().Str("文件", filePath).Msg("删除中间文件")
+				os.Remove(filePath)
+			}
+		}
+
+		logger.Info().Str("合并后的文件", output).Msg("完整回放下载完毕")
+		return nil
+	} else {
+		progressbar.Stop()
+	}
+
+	for _, i := range p.DownloadList.AsIntSlice() {
+		if filePath, ok := decappedFiles[i]; ok {
+			logger.Info().Str("文件", filePath).Msgf("第%d部分下载完成", i)
+		} else {
+			logger.Warn().Msgf("第%d部分下载不成功", i)
+		}
+	}
+
+	return nil
 }
