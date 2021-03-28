@@ -222,7 +222,7 @@ type DownloadParam struct {
 	Concurrency  uint
 }
 
-func download(p DownloadParam) error {
+func cliDownload(p DownloadParam) error {
 	// Mkdir
 	cwd, err := os.Getwd()
 	if err != nil {

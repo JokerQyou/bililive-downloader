@@ -3,6 +3,7 @@ package main
 import (
 	"bililive-downloader/helper"
 	"bililive-downloader/progressbar"
+	"bililive-downloader/version"
 	"bufio"
 	"errors"
 	"fmt"
@@ -184,7 +185,7 @@ func handleDownloadAction(c *cli.Context) error {
 	}
 	progressbar.Init(progressWriter)
 
-	return download(param)
+	return cliDownload(param)
 }
 
 // ask asks a question (prints given `msg`), and read user's answer via `os.Stdin`.
@@ -200,23 +201,27 @@ func ask(msg string) (string, error) {
 	return strings.TrimSpace(string(line)), nil
 }
 
-// handleVersionCommand handles `version` subcommand. It prints version of this program.
-func handleVersionCommand(c *cli.Context) error {
-	return cli.Exit("DEBUG!", returnCodeOk)
-}
-
 // newCliApp creates a cli.App instance to handle commandline execution.
 func newCliApp() *cli.App {
+	cli.VersionPrinter = func(c *cli.Context) {
+		_, _ = fmt.Fprintf(c.App.Writer, "%v 版本 %v, 编译时间 %v\n", c.App.Name, c.App.Version, c.App.Compiled)
+	}
+
 	return &cli.App{
-		Name:  "bililive-downloader",
-		Usage: "Download livestream recordings from Bilibili",
-		Flags: []cli.Flag{},
+		Version:  version.VersionString,
+		Compiled: version.CompiledTime,
+		Name:     "bililive-downloader",
+		Usage:    "Download livestream recordings from Bilibili",
+		Flags:    []cli.Flag{},
 		Commands: []*cli.Command{
 			{
 				Name:    "version",
 				Aliases: []string{"v"},
 				Usage:   "显示版本信息",
-				Action:  handleVersionCommand,
+				Action: func(c *cli.Context) error {
+					cli.ShowVersion(c)
+					return nil
+				},
 			},
 			{
 				Name:    "download",
