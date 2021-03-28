@@ -256,6 +256,31 @@ func cliDownload(p DownloadParam) error {
 
 	progressbar.Start()
 
+	fullRecordFile := filepath.Join(
+		recordDownloadDir,
+		fmt.Sprintf(
+			"%s-%s-%s-%s-complete.mp4",
+			strings.ReplaceAll(p.Info.Start.String(), ":", "-"),
+			p.RecordID,
+			p.Info.Title,
+			p.Parts.Quality(),
+		),
+	)
+	if _, err := os.Stat(fullRecordFile); !os.IsNotExist(err) {
+		logger.Debug().Str("文件", filepath.Base(fullRecordFile)).Msg("完整直播回放文件已存在，检查媒体时长")
+		inspector, _ := ffmpeg.NewRunner("--help")
+		fullRecordDuration, err := inspector.ProbSingleMediaDuration(fullRecordFile)
+		if err != nil {
+			logger.Error().Err(err).Str("文件", filepath.Base(fullRecordFile)).Msg("检查媒体文件出错")
+			return err
+		}
+
+		if math.Abs(float64(p.Parts.Length.Duration-fullRecordDuration)) < float64(time.Second*10) {
+			logger.Info().Str("文件", filepath.Base(fullRecordFile)).Msg("完整直播回放文件已存在，跳过下载")
+			return nil
+		}
+	}
+
 	decappedFiles, err := downloadRecordParts(p.Parts, p.DownloadList, recordDownloadDir, p.Concurrency)
 	if err != nil {
 		logger.Fatal().Err(err).Msg("下载直播回放出错")
@@ -264,18 +289,8 @@ func cliDownload(p DownloadParam) error {
 	// All parts downloaded, concat into a single file.
 	if len(p.DownloadList) == len(p.Parts.List) && len(decappedFiles) == len(p.Parts.List) {
 		logger.Info().Ints("下载的分段", p.DownloadList).Msg("合并为单个视频")
-		output := filepath.Join(
-			recordDownloadDir,
-			fmt.Sprintf(
-				"%s-%s-%s-%s-complete.mp4",
-				strings.ReplaceAll(p.Info.Start.String(), ":", "-"),
-				p.RecordID,
-				p.Info.Title,
-				p.Parts.Quality(),
-			),
-		)
-		if err := concatRecordParts(decappedFiles, output); err != nil {
-			logger.Fatal().Err(err).Ints("下载的分段", p.DownloadList).Str("合并后的文件", output).Msg("合并视频分段出错")
+		if err := concatRecordParts(decappedFiles, fullRecordFile); err != nil {
+			logger.Fatal().Err(err).Ints("下载的分段", p.DownloadList).Str("合并后的文件", fullRecordFile).Msg("合并视频分段出错")
 		}
 		progressbar.Stop()
 
@@ -284,7 +299,7 @@ func cliDownload(p DownloadParam) error {
 			logger.Debug().Err(err).Str("文件", filePath).Msg("删除中间文件")
 		}
 
-		logger.Info().Str("合并后的文件", output).Msg("完整回放下载完毕")
+		logger.Info().Str("合并后的文件", fullRecordFile).Msg("完整回放下载完毕")
 		return nil
 	} else {
 		progressbar.Stop()
