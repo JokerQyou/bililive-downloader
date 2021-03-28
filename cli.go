@@ -124,7 +124,6 @@ func handleDownloadAction(c *cli.Context) error {
 		partStart := param.Info.Start
 		for i, v := range param.Parts.List {
 			// Parse part start from filename
-			// ***REMOVED***
 			fields := strings.SplitN(strings.SplitN(v.FileName(), ".", 2)[0], "-", 2)
 			fileStartTimeStr := fields[len(fields)-1]
 			start, err := time.ParseInLocation("2006-01-02-15-04-05", fileStartTimeStr, timezone)
