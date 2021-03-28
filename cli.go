@@ -13,15 +13,30 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 )
 
 const defaultConcurrency = 2
+const (
+	returnCodeOk int = iota
+	returnCodeError
+)
+
+var timezone *time.Location
+var initGuard sync.Once
+
+func init() {
+	initGuard.Do(func() {
+		timezone, _ = time.LoadLocation("Asia/Shanghai")
+	})
+}
 
 // extractRecordID extract livestream record ID from given string.
 func extractRecordID(link string) (string, error) {
-	recordId := strings.TrimSpace(strings.Split(string(link), "?")[0])
+	recordId := strings.TrimSpace(strings.Split(link, "?")[0])
 	rIds := strings.Split(recordId, "/")
-	recordId = rIds[len(rIds)-1]
+	recordId = strings.TrimSpace(rIds[len(rIds)-1])
 	if recordId == "" {
 		return "", errors.New("没有指定直播回放ID")
 	}
@@ -36,10 +51,10 @@ func handleDownloadAction(c *cli.Context) error {
 
 	var param DownloadParam
 
-	if interactive && strings.TrimSpace(c.String("record")) == "" {
+	if strings.TrimSpace(c.String("record")) == "" && interactive {
 		var recordLink string
 		if recordLink, err = ask("请输入您要下载的B站直播回放链接地址: "); err != nil {
-			return cli.Exit(err, 1)
+			return cli.Exit(err, returnCodeError)
 		}
 
 		c.Set("record", recordLink)
@@ -47,7 +62,7 @@ func handleDownloadAction(c *cli.Context) error {
 
 	// Extract parameters from cli context
 	if recordID, err := extractRecordID(c.String("record")); err != nil {
-		return cli.Exit(err.Error(), 1)
+		return cli.Exit(err.Error(), returnCodeError)
 	} else {
 		param.RecordID = recordID
 		logger.Info().Str("ID", param.RecordID).Msg("直播回放ID确认")
@@ -59,7 +74,7 @@ func handleDownloadAction(c *cli.Context) error {
 		var concurrencyStr string
 		concurrencyStr, err = ask("下载并发数（可同时进行多少个分段的下载。默认为2，如果您的网络较好，可适当增加）: ")
 		if err != nil {
-			return cli.Exit(err, 1)
+			return cli.Exit(err, returnCodeError)
 		} else {
 			if con32, parseErr := strconv.ParseUint(concurrencyStr, 10, 32); parseErr == nil {
 				concurrency = uint(con32)
@@ -76,26 +91,25 @@ func handleDownloadAction(c *cli.Context) error {
 
 	if recordInfo, err := fetchRecordInfo(param.RecordID); err != nil {
 		logger.Error().Err(err).Msg("加载回放信息出错")
-		return cli.Exit("加载回放信息出错", 1)
+		return cli.Exit("加载回放信息出错", returnCodeError)
 	} else {
 		param.Info = recordInfo
 	}
 
 	if liverInfo, err := fetchLiverInfo(param.Info.RoomID); err != nil {
 		logger.Error().Err(err).Msg("加载直播间信息出错")
-		return cli.Exit("加载直播间信息出错", 1)
+		return cli.Exit("加载直播间信息出错", returnCodeError)
 	} else {
 		param.Liver = liverInfo
 	}
 
 	if parts, err := fetchRecordParts(param.RecordID); err != nil {
 		logger.Error().Err(err).Msg("加载回放分段信息出错")
-		return cli.Exit("加载回放分段信息出错", 1)
+		return cli.Exit("加载回放分段信息出错", returnCodeError)
 	} else {
 		param.Parts = parts
 	}
 
-	// FIXME
 	// Interactive mode, ask again, for part selection.
 	if interactive {
 		var selectionMessenger strings.Builder
@@ -108,9 +122,16 @@ func handleDownloadAction(c *cli.Context) error {
 			param.Parts.Quality(),
 			param.Parts.Size, len(param.Parts.List),
 		))
-		// TODO Parse part start from filename
 		partStart := param.Info.Start
 		for i, v := range param.Parts.List {
+			// Parse part start from filename
+			// ***REMOVED***
+			fields := strings.SplitN(strings.SplitN(v.FileName(), ".", 2)[0], "-", 2)
+			fileStartTimeStr := fields[len(fields)-1]
+			start, err := time.ParseInLocation("2006-01-02-15-04-05", fileStartTimeStr, timezone)
+			if err == nil {
+				partStart = helper.JSONTime{Time: start}
+			}
 			partEnd := helper.JSONTime{Time: partStart.Add(v.Length.Duration)}
 			selectionMessenger.WriteString(fmt.Sprintf("%d\t%s\t长度%s\t大小%s\t%s ~ %s\n", i+1, v.FileName(), v.Length, v.Size, partStart, partEnd))
 			partStart = partEnd
@@ -119,7 +140,7 @@ func handleDownloadAction(c *cli.Context) error {
 
 		var userSelection string
 		if userSelection, err = ask(selectionMessenger.String()); err != nil {
-			return cli.Exit(err, 1)
+			return cli.Exit(err, returnCodeError)
 		}
 		c.Set("select", userSelection)
 	}
@@ -133,11 +154,11 @@ func handleDownloadAction(c *cli.Context) error {
 		selection, err := models.ParseStringFromString(selected)
 		if err != nil {
 			logger.Error().Err(err).Str("输入的选择", selected).Msg("无法解析输入的选择")
-			return cli.Exit("无法解析输入的选择", 1)
+			return cli.Exit("无法解析输入的选择", returnCodeError)
 		}
 		if selection.Count() == 0 {
 			logger.Error().Str("输入的选择", selected).Msg("没有选择要下载的分段")
-			return cli.Exit("没有选择要下载的分段", 1)
+			return cli.Exit("没有选择要下载的分段", returnCodeError)
 		}
 		param.DownloadList = selection
 		logger.Info().Stringer("选择的分段", param.DownloadList).Send()
@@ -171,7 +192,7 @@ func ask(msg string) (string, error) {
 
 // handleVersionCommand handles `version` subcommand. It prints version of this program.
 func handleVersionCommand(c *cli.Context) error {
-	return errors.New("DEBUG!")
+	return cli.Exit("DEBUG!", returnCodeOk)
 }
 
 // newCliApp creates a cli.App instance to handle commandline execution.

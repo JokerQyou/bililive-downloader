@@ -1,11 +1,8 @@
 package models
 
 import (
-	"bufio"
 	"errors"
-	"fmt"
 	"math"
-	"os"
 	"strconv"
 	"strings"
 )
@@ -93,20 +90,4 @@ func ParseStringFromString(s string) (*IntSelection, error) {
 	}
 
 	return &selected, nil
-}
-
-// SelectFromList asks the user to select a list of indexes from the source slice, and return the selected as a `IntSelection`.
-// If the user types `0` all the elements are considered selected.
-// The source slice is [1, last].
-// `msg` is printed before user interaction.
-// TODO How should we test this?
-func ReadFrom(msg string) (*IntSelection, error) {
-	// Ask user what to do
-	fmt.Print(msg)
-	input, _, err := bufio.NewReader(os.Stdin).ReadLine()
-	if err != nil {
-		return nil, err
-	}
-
-	return ParseStringFromString(string(input))
 }
