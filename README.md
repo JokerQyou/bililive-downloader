@@ -4,7 +4,7 @@ A simple downloader
 
 # Build
 
-```go
+```bash
 go run build.go
 ```
 
