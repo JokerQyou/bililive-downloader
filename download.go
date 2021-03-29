@@ -289,7 +289,7 @@ func cliDownload(p DownloadParam) error {
 	// Skip if the full recording is already downloaded.
 	if _, err := os.Stat(fullRecordFile); !os.IsNotExist(err) {
 		logger.Debug().Str("文件", filepath.Base(fullRecordFile)).Msg("完整直播回放文件已存在，检查媒体时长")
-		inspector, _ := ffmpeg.NewRunner("--help")
+		inspector, _ := ffmpeg.NewRunner()
 		fullRecordDuration, err := inspector.ProbSingleMediaDuration(fullRecordFile)
 		if err != nil {
 			logger.Error().Err(err).Str("文件", filepath.Base(fullRecordFile)).Msg("检查媒体文件出错")
