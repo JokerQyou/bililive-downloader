@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"github.com/rs/zerolog"
 	"github.com/urfave/cli/v2"
 	"io"
 	"io/ioutil"
@@ -201,6 +202,17 @@ func ask(msg string) (string, error) {
 	return strings.TrimSpace(string(line)), nil
 }
 
+// wrapAction wraps given action. It takes care of `--debug` option, to setup proper logging level.
+func wrapAction(actionFunc cli.ActionFunc) cli.ActionFunc {
+	return func(c *cli.Context) error {
+		if c.Bool("debug") {
+			logger = logger.Level(zerolog.DebugLevel)
+			logger.Debug().Msg("开启DEBUG级别日志，进度条可能被打乱")
+		}
+		return actionFunc(c)
+	}
+}
+
 // newCliApp creates a cli.App instance to handle commandline execution.
 func newCliApp() *cli.App {
 	cli.VersionPrinter = func(c *cli.Context) {
@@ -212,7 +224,7 @@ func newCliApp() *cli.App {
 		Compiled: version.CompiledTime,
 		Name:     "bililive-downloader",
 		Usage:    "Download livestream recordings from Bilibili",
-		Flags:    []cli.Flag{},
+		Flags:    []cli.Flag{&cli.BoolFlag{Name: "debug", Usage: "开启DEBUG级别日志", Value: false}},
 		Commands: []*cli.Command{
 			{
 				Name:    "version",
@@ -227,7 +239,7 @@ func newCliApp() *cli.App {
 				Name:    "download",
 				Aliases: []string{"d"},
 				Usage:   "下载直播回放",
-				Action:  handleDownloadAction,
+				Action:  wrapAction(handleDownloadAction),
 				Flags: []cli.Flag{
 					&cli.BoolFlag{Name: "interactive", Aliases: []string{"i"}, Usage: "交互式询问各个未传递的参数。", Value: false},
 					&cli.UintFlag{Name: "concurrency", Usage: "设定下载的`并发数`。如果您的网络较好，可适当调高。"},
