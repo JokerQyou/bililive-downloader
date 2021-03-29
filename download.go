@@ -155,13 +155,12 @@ func downloadRecordParts(recordInfo *models.RecordParts, downloadList []int, whe
 	// Generate and insert tasks.
 	for i, part := range recordInfo.List {
 		recordPart := part
-		index := i
-		if !helper.ContainsInt(downloadList, index) {
+		if !helper.ContainsInt(downloadList, i+1) {
 			continue
 		}
 
 		task := &models.PartTask{
-			PartNumber:        index + 1,
+			PartNumber:        i + 1,
 			Part:              &recordPart,
 			DownloadDirectory: where,
 		}
