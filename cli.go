@@ -242,8 +242,8 @@ func newCliApp() *cli.App {
 				Action:  wrapAction(handleDownloadAction),
 				Flags: []cli.Flag{
 					&cli.BoolFlag{Name: "interactive", Aliases: []string{"i"}, Usage: "交互式询问各个未传递的参数。", Value: false},
-					&cli.UintFlag{Name: "concurrency", Usage: "设定下载的`并发数`。如果您的网络较好，可适当调高。"},
-					&cli.StringFlag{Name: "select", Usage: "指定要下载的`分段编号`，以逗号分隔。all表示指定所有分段。如果指定所有分段，则下载完成后会合并为单个文件。"},
+					&cli.UintFlag{Name: "concurrency", Usage: "设定`并发数`（可以同时下载几个分段）。如果您的网络较好，可适当调高。"},
+					&cli.StringFlag{Name: "select", Usage: "指定要下载的`分段编号`，以逗号分隔。如果指定所有分段，则下载完成后会合并为单个文件。"},
 					&cli.StringFlag{Name: "record", Usage: "直播回放的`链接或ID`。"},
 				},
 			},
