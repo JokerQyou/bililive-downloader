@@ -79,7 +79,7 @@ func GenerateM3U8Playlist(inputFiles []string, outputFile string) error {
 		return fmt.Errorf("failed to detect file mode")
 	}
 
-	playlistHeader.WriteString(fmt.Sprintf("#EXT-X-TARGETDURATION:%d\n", maxDuration.Round(time.Second)))
+	playlistHeader.WriteString(fmt.Sprintf("#EXT-X-TARGETDURATION:%d\n", int64(maxDuration.Round(time.Second).Seconds()+1)))
 	playlistHeader.WriteString("#EXT-X-MEDIA-SEQUENCE:0\n\n")
 	return ioutil.WriteFile(outputFile, []byte(playlistHeader.String()+playlistItems.String()), *refMode)
 }
