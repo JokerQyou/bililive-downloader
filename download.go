@@ -123,12 +123,11 @@ func downloadRecordParts(recordInfo *models.RecordParts, downloadList []int, whe
 
 	var wg sync.WaitGroup
 
-	// FIXME loggins
 	if int(concurrency) > len(downloadList) {
 		concurrency = uint(len(downloadList))
-	} else {
-		fmt.Printf("下载并发数 %d\n", concurrency)
+		logger.Info().Uint("下载并发数", concurrency).Msg("自动调整下载并发数")
 	}
+
 	for i := 0; i < int(concurrency); i++ {
 		wg.Add(1)
 		go func() {
@@ -141,7 +140,8 @@ func downloadRecordParts(recordInfo *models.RecordParts, downloadList []int, whe
 				func() {
 					downloadedFilePath, err := downloadSinglePart(downloadTask)
 					if err != nil {
-						downloadTask.SetCurrentStep(fmt.Sprintf("出错: %v", err))
+						logger.Error().Err(err).Int("编号", downloadTask.PartNumber).Msg("下载出错")
+						downloadTask.SetCurrentStep("已出错")
 					} else {
 						filePathUpdater.Lock()
 						defer filePathUpdater.Unlock()
