@@ -175,8 +175,10 @@ func handleDownloadAction(c *cli.Context) error {
 		param.DownloadList = selection
 		logger.Info().Ints("选择的分段", param.DownloadList).Send()
 	}
-
-	logger.Debug().Interface("param", param).Send()
+	{
+		param.NoMerge = c.Bool("no-merge")
+		logger.Info().Bool("将合并为完整视频", !param.NoMerge).Send()
+	}
 
 	// Setup progress bar manager only if we're connected to a TTY
 	var progressWriter io.Writer = os.Stdout
@@ -243,7 +245,8 @@ func newCliApp() *cli.App {
 				Flags: []cli.Flag{
 					&cli.BoolFlag{Name: "interactive", Aliases: []string{"i"}, Usage: "交互式询问各个未传递的参数。", Value: false},
 					&cli.UintFlag{Name: "concurrency", Usage: "设定`并发数`（可以同时下载几个分段）。如果您的网络较好，可适当调高。"},
-					&cli.StringFlag{Name: "select", Usage: "指定要下载的`分段编号`，以逗号分隔。如果指定所有分段，则下载完成后会合并为单个文件。"},
+					&cli.StringFlag{Name: "select", Usage: "指定要下载的`分段编号`，以逗号分隔。"},
+					&cli.BoolFlag{Name: "no-merge", Usage: "不合并各个视频分段。如果不指定此选项，并下载所有分段，则会合并为单个视频文件。", Value: false},
 					&cli.StringFlag{Name: "record", Usage: "直播回放的`链接或ID`。"},
 				},
 			},

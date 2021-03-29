@@ -27,13 +27,15 @@ func downloadSinglePart(task *models.PartTask) (filePath string, err error) {
 
 	rawFilePath := filepath.Join(task.DownloadDirectory, recordPart.FileName())
 	decappedTsFilePath := fmt.Sprintf("%s.ts", strings.Split(rawFilePath, ".")[0])
+	tsFileName := filepath.Base(decappedTsFilePath)
 
 	bar := task.AddProgressBar(-1)
 
 	// Already processed (probably selectively downloaded this part before), use existing MPEGTS media as result, no need to re-download.
 	if info, err := os.Stat(decappedTsFilePath); err == nil && info.Mode().IsRegular() {
+		logger.Debug().Str("文件", info.Name()).Msg("TS文件已存在，完全跳过处理")
 		task.SetCurrentStep("已存在")
-		task.SetFileName(filepath.Base(decappedTsFilePath))
+		task.SetFileName(tsFileName)
 		bar.SetTotal(info.Size())
 		bar.SetCurrent(info.Size())
 		return decappedTsFilePath, nil
@@ -46,12 +48,14 @@ func downloadSinglePart(task *models.PartTask) (filePath string, err error) {
 
 	// Already downloaded, directly proceed to de-cap, skip downloading.
 	if info, err := os.Stat(rawFilePath); err == nil && info.Size() == int64(recordPart.Size.Bytes()) {
+		logger.Debug().Str("文件", rawFilePath).Msg("文件已经存在，跳过下载")
 		task.SetCurrentStep("已下载")
 		bar.SetTotal(info.Size())
 		bar.SetCurrent(info.Size())
 		goto WaitTillDecapped
 	}
 
+	logger.Debug().Str("文件", rawFilePath).Msg("开始下载文件")
 	bar.SetTotal(int64(task.Part.Size.Bytes()))
 	task.SetCurrentStep("下载中")
 	client = grab.NewClient()
@@ -71,6 +75,7 @@ WaitTillDownloaded:
 		case <-ticker.C:
 			bar.SetCurrent(resp.BytesComplete())
 		case <-resp.Done:
+			logger.Debug().Str("文件", rawFilePath).Msg("文件下载请求结束")
 			bar.SetCurrent(resp.BytesComplete())
 			break WaitTillDownloaded
 		}
@@ -79,8 +84,9 @@ WaitTillDownloaded:
 WaitTillDecapped:
 	// De-cap from FLV to MPEG TS media
 	// TODO Are we confident enough that all bilibili livestream records will be H.264 streams encapsulated in FLV containers?
+	logger.Debug().Str("文件", rawFilePath).Str("目标文件", tsFileName).Msg("解包为TS媒体")
 	task.SetCurrentStep("解包中")
-	task.SetFileName(filepath.Base(decappedTsFilePath))
+	task.SetFileName(tsFileName)
 	bar.SetUnitType(progressbar.UnitTypeDuration)
 	runner, _ := ffmpeg.NewRunner("-i", rawFilePath, "-c", "copy", "-bsf:v", "h264_mp4toannexb", "-f", "mpegts", decappedTsFilePath)
 	runner.ProbeMediaDuration(rawFilePath)
@@ -94,20 +100,26 @@ WaitTillDecapped:
 		bar.SetCurrent(current)
 	})
 
-	// 解包后对TS媒体进行检查，如果长度相差过大则认为解包失败，保留FLV文件以供后续人工检视
-	durationMatch := func(tsDuration time.Duration) bool {
-		return math.Abs(float64(task.Part.Length.Duration-tsDuration)) < float64(time.Second*3)
-	}
-	if err == nil {
+	if err != nil {
+		logger.Error().Err(err).Str("原始文件", rawFilePath).Str("TS文件", tsFileName).Msg("解包出错")
+		task.SetCurrentStep("已出错")
+	} else {
+		// 解包后对TS媒体进行检查，如果长度相差过大则认为解包失败，保留FLV文件以供后续人工检视
+		durationMatch := func(tsDuration time.Duration) bool {
+			diff := math.Abs(float64(task.Part.Length.Duration - tsDuration))
+			logger.Debug().Dur("期望时长", task.Part.Length.Duration).Dur("解包后时长", tsDuration).Msg("检查解包后媒体时长")
+			return diff < float64(time.Second*3)
+		}
+
 		task.SetCurrentStep("检查中")
 		if tsDuration, err := runner.ProbSingleMediaDuration(decappedTsFilePath); err == nil && durationMatch(tsDuration) {
+			logger.Debug().Str("将删除的文件", rawFilePath).Str("TS文件", tsFileName).Msg("检查通过")
 			os.Remove(rawFilePath)
 			task.SetCurrentStep("已完成")
 		} else {
-			task.SetCurrentStep(fmt.Sprintf("出错: 解包后媒体长度相差%s", task.Part.Length.Duration-tsDuration))
+			logger.Error().Err(err).Str("原始文件", rawFilePath).Str("TS文件", tsFileName).Msg("解包后媒体时长检查未通过")
+			task.SetCurrentStep("已出错")
 		}
-	} else {
-		task.SetCurrentStep(fmt.Sprintf("出错: %v", err))
 	}
 
 	return decappedTsFilePath, err
@@ -129,12 +141,15 @@ func downloadRecordParts(recordInfo *models.RecordParts, downloadList []int, whe
 	}
 
 	for i := 0; i < int(concurrency); i++ {
+		workerIndex := i + 1
 		wg.Add(1)
-		go func() {
+		go func(index int) {
+			logger.Debug().Int("worker编号", index).Msg("worker启动")
 			defer wg.Done()
 
 			for task := range taskQueue {
 				downloadTask := task
+				logger.Debug().Int("worker编号", index).Int("任务编号", downloadTask.PartNumber).Msg("接到任务")
 				time.Sleep(time.Millisecond * 20 * time.Duration(downloadTask.PartNumber))
 
 				func() {
@@ -149,7 +164,8 @@ func downloadRecordParts(recordInfo *models.RecordParts, downloadList []int, whe
 					}
 				}()
 			}
-		}()
+			logger.Debug().Int("worker编号", index).Msg("worker退出")
+		}(workerIndex)
 	}
 
 	// Generate and insert tasks.
@@ -169,8 +185,11 @@ func downloadRecordParts(recordInfo *models.RecordParts, downloadList []int, whe
 		taskQueue <- task
 	}
 
+	logger.Debug().Int("任务数量", len(downloadList)).Msg("所有任务发送完毕")
 	close(taskQueue)
+
 	wg.Wait()
+	logger.Debug().Msg("所有worker都已退出")
 
 	return
 }
@@ -219,6 +238,7 @@ type DownloadParam struct {
 	Liver        *models.LiverInfo      // Livestreamer info
 	DownloadList []int                  // selected part numbers
 	Concurrency  uint
+	NoMerge      bool
 }
 
 func cliDownload(p DownloadParam) error {
@@ -289,19 +309,34 @@ func cliDownload(p DownloadParam) error {
 
 	// All parts downloaded, concat into a single file.
 	if len(p.DownloadList) == len(p.Parts.List) && len(decappedFiles) == len(p.Parts.List) {
-		logger.Info().Ints("下载的分段", p.DownloadList).Msg("合并为单个视频")
-		if err := concatRecordParts(decappedFiles, fullRecordFile); err != nil {
-			logger.Fatal().Err(err).Ints("下载的分段", p.DownloadList).Str("合并后的文件", fullRecordFile).Msg("合并视频分段出错")
-		}
-		progressbar.Stop()
+		// Generate playlist to reference all the TS media files.
+		if p.NoMerge {
+			logger.Debug().Msg("将不合并视频文件，仅生成m3u8播放列表")
+			var tsFileList []string
+			for _, i := range p.DownloadList {
+				tsFileList = append(tsFileList, decappedFiles[i])
+			}
 
-		for _, filePath := range decappedFiles {
-			err = os.Remove(filePath)
-			logger.Debug().Err(err).Str("文件", filePath).Msg("删除中间文件")
-		}
+			playlistFilePath := filepath.Join(recordDownloadDir, "播放列表.m3u8")
+			err := ffmpeg.GenerateM3U8Playlist(tsFileList, playlistFilePath)
+			logger.Debug().Err(err).Msg("生成m3u8播放列表")
+			return err
 
-		logger.Info().Str("合并后的文件", fullRecordFile).Msg("完整回放下载完毕")
-		return nil
+		} else { // Merge all TS media files into a single MP4 file.
+			logger.Info().Ints("下载的分段", p.DownloadList).Msg("合并为单个视频")
+			if err := concatRecordParts(decappedFiles, fullRecordFile); err != nil {
+				logger.Fatal().Err(err).Ints("下载的分段", p.DownloadList).Str("合并后的文件", fullRecordFile).Msg("合并视频分段出错")
+			}
+			progressbar.Stop()
+
+			for _, filePath := range decappedFiles {
+				err = os.Remove(filePath)
+				logger.Debug().Err(err).Str("文件", filePath).Msg("删除中间文件")
+			}
+
+			logger.Info().Str("合并后的文件", fullRecordFile).Msg("完整回放下载完毕")
+			return nil
+		}
 	} else {
 		progressbar.Stop()
 	}
