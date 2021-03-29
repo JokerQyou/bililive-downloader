@@ -25,7 +25,7 @@ func (t *PartTask) DecorFileName() string {
 }
 
 func (t *PartTask) DecorPartName() string {
-	return fmt.Sprintf("第%d部分", t.PartNumber)
+	return fmt.Sprintf("%d", t.PartNumber)
 }
 
 // PartTask represents a task for downloading a single part of livestream recording.

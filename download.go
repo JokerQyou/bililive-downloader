@@ -79,7 +79,7 @@ WaitTillDownloaded:
 WaitTillDecapped:
 	// De-cap from FLV to MPEG TS media
 	// TODO Are we confident enough that all bilibili livestream records will be H.264 streams encapsulated in FLV containers?
-	task.SetCurrentStep("解包")
+	task.SetCurrentStep("解包中")
 	task.SetFileName(filepath.Base(decappedTsFilePath))
 	bar.SetUnitType(progressbar.UnitTypeDuration)
 	runner, _ := ffmpeg.NewRunner("-i", rawFilePath, "-c", "copy", "-bsf:v", "h264_mp4toannexb", "-f", "mpegts", decappedTsFilePath)
@@ -102,7 +102,7 @@ WaitTillDecapped:
 		task.SetCurrentStep("检查中")
 		if tsDuration, err := runner.ProbSingleMediaDuration(decappedTsFilePath); err == nil && durationMatch(tsDuration) {
 			os.Remove(rawFilePath)
-			task.SetCurrentStep("完成")
+			task.SetCurrentStep("已完成")
 		} else {
 			task.SetCurrentStep(fmt.Sprintf("出错: 解包后媒体长度相差%s", task.Part.Length.Duration-tsDuration))
 		}
@@ -164,7 +164,7 @@ func downloadRecordParts(recordInfo *models.RecordParts, downloadList []int, whe
 			Part:              &recordPart,
 			DownloadDirectory: where,
 		}
-		task.SetCurrentStep("等待下载")
+		task.SetCurrentStep("等待中")
 		task.SetFileName(recordPart.FileName())
 		taskQueue <- task
 	}
