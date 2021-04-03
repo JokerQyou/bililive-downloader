@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"github.com/c2h5oh/datasize"
 	"github.com/rs/zerolog"
 	"github.com/urfave/cli/v2"
 	"io"
@@ -180,6 +181,24 @@ func handleDownloadAction(c *cli.Context) error {
 		logger.Info().Bool("将合并为完整视频", !param.NoMerge).Send()
 	}
 
+	if !c.IsSet("limit") && interactive {
+		var userInput string
+		if userInput, err = ask("要对下载进行限速吗？在此输入限速值，单位是Mib/s。例如1表示限速1MiB/s，输入0表示不限速: "); err != nil {
+			return cli.Exit(err, returnCodeError)
+		}
+		c.Set("limit", userInput)
+	}
+	{
+		limit := c.Float64("limit")
+		speedLimit := int64(limit * float64(datasize.MB))
+		if speedLimit <= 0 {
+			logger.Info().Msg("下载不限速")
+		} else {
+			param.RateLimit = datasize.ByteSize(speedLimit)
+			logger.Info().Str("限速值", param.RateLimit.HumanReadable()).Uint64("每秒字节数", param.RateLimit.Bytes()).Msg("下载限速")
+		}
+	}
+
 	// Setup progress bar manager only if we're connected to a TTY
 	var progressWriter io.Writer = os.Stdout
 	if !helper.IsTTY() {
@@ -248,6 +267,7 @@ func newCliApp() *cli.App {
 					&cli.StringFlag{Name: "select", Usage: "指定要下载的`分段编号`，以逗号分隔。"},
 					&cli.BoolFlag{Name: "no-merge", Usage: "不合并各个视频分段。如果不指定此选项，并下载所有分段，则会合并为单个视频文件。", Value: false},
 					&cli.StringFlag{Name: "record", Usage: "直播回放的`链接或ID`。"},
+					&cli.Float64Flag{Name: "limit", Usage: "`下载限速值`，单位为MiB/s。例如1表示限速1MiB/s，0表示不限速。"},
 				},
 			},
 		},

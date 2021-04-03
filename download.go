@@ -6,8 +6,10 @@ import (
 	"bililive-downloader/models"
 	"bililive-downloader/progressbar"
 	"fmt"
+	"github.com/c2h5oh/datasize"
 	"github.com/cavaliercoder/grab"
 	"github.com/gosuri/uiprogress"
+	"golang.org/x/time/rate"
 	"io/ioutil"
 	"math"
 	"os"
@@ -65,6 +67,7 @@ func downloadSinglePart(task *models.PartTask) (filePath string, err error) {
 		return
 	}
 
+	dlReq.RateLimiter = task.RateLimiter
 	resp = client.Do(dlReq)
 	ticker = time.NewTicker(time.Millisecond * 120)
 	defer ticker.Stop()
@@ -127,7 +130,7 @@ WaitTillDecapped:
 
 // downloadRecordParts download selected parts (`downloadList`) of given livestream record into `where`.
 // It also manages the progress bar and concurrency of downloading (`concurrency`).
-func downloadRecordParts(recordInfo *models.RecordParts, downloadList []int, where string, concurrency uint) (filePaths map[int]string, err error) {
+func downloadRecordParts(recordInfo *models.RecordParts, downloadList []int, where string, concurrency uint, speedLimit datasize.ByteSize) (filePaths map[int]string, err error) {
 	taskQueue := make(chan *models.PartTask)
 
 	filePaths = make(map[int]string)
@@ -168,6 +171,10 @@ func downloadRecordParts(recordInfo *models.RecordParts, downloadList []int, whe
 		}(workerIndex)
 	}
 
+	var speedLimiter grab.RateLimiter
+	if speedLimit != 0 {
+		speedLimiter = rate.NewLimiter(rate.Limit(speedLimit), int(speedLimit))
+	}
 	// Generate and insert tasks.
 	for i, part := range recordInfo.List {
 		recordPart := part
@@ -179,6 +186,7 @@ func downloadRecordParts(recordInfo *models.RecordParts, downloadList []int, whe
 			PartNumber:        i + 1,
 			Part:              &recordPart,
 			DownloadDirectory: where,
+			RateLimiter:       speedLimiter,
 		}
 		task.SetCurrentStep("等待中")
 		task.SetFileName(recordPart.FileName())
@@ -236,9 +244,10 @@ type DownloadParam struct {
 	Info         *models.LiveRecordInfo // Record info
 	Parts        *models.RecordParts    // Video parts
 	Liver        *models.LiverInfo      // Livestreamer info
-	DownloadList []int                  // selected part numbers
+	DownloadList []int                  // Selected part numbers
 	Concurrency  uint
 	NoMerge      bool
+	RateLimit    datasize.ByteSize // Download speed limitation, in bytes/second
 }
 
 func cliDownload(p DownloadParam) error {
@@ -302,7 +311,7 @@ func cliDownload(p DownloadParam) error {
 		}
 	}
 
-	decappedFiles, err := downloadRecordParts(p.Parts, p.DownloadList, recordDownloadDir, p.Concurrency)
+	decappedFiles, err := downloadRecordParts(p.Parts, p.DownloadList, recordDownloadDir, p.Concurrency, p.RateLimit)
 	if err != nil {
 		logger.Fatal().Err(err).Msg("下载直播回放出错")
 	}

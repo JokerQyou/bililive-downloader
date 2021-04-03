@@ -3,6 +3,7 @@ package models
 import (
 	"bililive-downloader/progressbar"
 	"fmt"
+	"github.com/cavaliercoder/grab"
 	"github.com/gosuri/uiprogress"
 )
 
@@ -33,6 +34,7 @@ type PartTask struct {
 	PartNumber        int         // partNumber is index+1
 	Part              *RecordPart // Part is record part info
 	DownloadDirectory string
+	RateLimiter       grab.RateLimiter
 	currentStep       string
 	filename          string
 }
